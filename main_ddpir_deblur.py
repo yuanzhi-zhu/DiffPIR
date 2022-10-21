@@ -59,7 +59,7 @@ def main():
     # Preparation
     # ----------------------------------------
 
-    noise_level_img         = 2.55/255.0           # set AWGN noise level for LR image, default: 0
+    noise_level_img         = 12.75/255.0           # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
     model_name              = 'diffusion_ffhq_10m'  #diffusion_ffhq_10m, drunet_color, set diffusino model
     testset_name            = 'set5'            # set testing set,  'set18' | 'set24'
@@ -82,7 +82,7 @@ def main():
     ddim_sample             = False             # sampling method
     model_out_type          = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
     skip_type               = 'uniform'         # uniform, quad
-    eta                     = 1.                # eta for ddim sampling
+    eta                     = 0.2                # eta for ddim sampling
     
     sf                      = 1
     task_current            = 'deblur'          
@@ -256,7 +256,7 @@ def main():
         k = kernels[0, k_index].astype(np.float64)
         util.imshow(k) if show_img else None
 
-        def test_rho(lambda_=lambda_, model_out_type=model_out_type):
+        def test_rho(lambda_=lambda_):
             for idx, img in enumerate(L_paths):
 
                 # --------------------------------
@@ -285,10 +285,7 @@ def main():
                 rhos = []
                 for i in range(num_train_timesteps):
                     sigmas.append(reduced_alpha_cumprod[999-i])
-                    if model_out_type == 'pred_xstart':
-                        sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
-                    elif model_out_type == 'pred_x_prev':
-                        sigma_ks.append(torch.sqrt(betas[i]/alphas[i]))
+                    sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
                     rhos.append(lambda_*(sigma**2)/(sigma_ks[i]**2))
                         
                 rhos, sigmas, sigma_ks = torch.tensor(rhos).to(device), torch.tensor(sigmas).to(device), torch.tensor(sigma_ks).to(device)
@@ -300,7 +297,6 @@ def main():
                 # x = util.single2tensor4(img_L).to(device)
 
                 y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
-                y = y * 2 -1        # [-1,1]
 
                 t_y = find_nearest(reduced_alpha_cumprod,noise_level_img)
                 sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
@@ -309,6 +305,8 @@ def main():
                 # x = torch.randn_like(y)     
 
                 k_tensor = util.single2tensor4(np.expand_dims(k, 2)).to(device)
+
+                FB, FBC, F2B, FBFy = sr.pre_calculate(y, k_tensor, sf)
 
                 # --------------------------------
                 # (4) main iterations
@@ -347,39 +345,16 @@ def main():
 
                         elif 'diffusion' in model_name:
                             # solve equation 6b with one reverse diffusion step
-                            if skip > 1 and model_out_type == 'pred_x_prev' and i != len(seq)-1:
-                                # generalized ddim sampling method
-                                t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
-                                x0 = model_fn(x, noise_level=curr_sigma*255,model_out_type='pred_xstart')
-                                # x = ((torch.sqrt(alphas_cumprod[t_im1]) * betas[t_i]) * x0 + \
-                                #     (torch.sqrt(alphas[t_i]) * sqrt_1m_alphas_cumprod[t_im1]**2) * x) \
-                                #          / (1.0 - alphas_cumprod[t_i])
-                                # x = x + sqrt_1m_alphas_cumprod[t_im1]**2 / sqrt_1m_alphas_cumprod[t_i]**2 * betas[t_i] * torch.randn_like(x)
-                                alpha_prod_t = alphas_cumprod[int(t_i)]
-                                beta_prod_t = 1 - alpha_prod_t
-                                eps = (x - alpha_prod_t ** (0.5) * x0) / beta_prod_t ** (0.5)
-                                eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
-                                x = torch.sqrt(alphas_cumprod[t_im1]) * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
-                                            + eta_sigma * torch.randn_like(x)
-                            else: 
-                                x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
-                                x0 = x
+                            x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
+                            x0 = x
                             # x = utils_model.test_mode(model_fn, x, mode=0, refield=32, min_size=256, modulo=16, vec_t=vec_t)
 
                         # --------------------------------
                         # step 2, FFT
                         # --------------------------------
 
-                        # add noise, make the condition image noise level consistent in pixel level
-                        if model_out_type == 'pred_xstart':
-                            y_t = y
-                        elif model_out_type == 'pred_x_prev':
-                            y_t = sqrt_alphas_cumprod[t_i] * (y) + sqrt_1m_alphas_cumprod[t_i] * (torch.randn_like(y))
-                            # y_t = y
                         if seq[i] != seq[-1]:
                             if sub_1_analytic:
-                                y_t = y_t / 2 + 0.5         # [0,1]
-                                FB, FBC, F2B, FBFy = sr.pre_calculate(y_t, k_tensor, sf)
                                 tau = rhos[t_i].float().repeat(1, 1, 1, 1)
                                 # when noise level less than given image noise, skip
                                 if i < num_train_timesteps-noise_model_t:
@@ -387,9 +362,10 @@ def main():
                                     x = sr.data_solution(x, FB, FBC, F2B, FBFy, tau, sf)
                                     x = x * 2 - 1
                                 else:
-                                    model_out_type = 'pred_x_prev'
+                                    # model_out_type = 'pred_x_prev'
                                     pass
                             else:
+                                # TODO: first order solver
                                 #Tx = ndimage.filters.convolve(x, np.expand_dims(k, axis=2), mode='wrap')
                                 #x = x - 1 / (2*rhos[t_i]) * (Tx - y_t)
                                 pass
@@ -398,8 +374,9 @@ def main():
                             if i < num_train_timesteps-noise_model_t: 
                                 x = sqrt_alphas_cumprod[t_i] * (x) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
                             # for the last step without analytic solution, need to add noise with the help of model output
-                            elif i == num_train_timesteps-noise_model_t: 
-                                # generalized ddim sampling method
+                            else: 
+                                # generalized ddim sampling method, with correction from model
+                                # from x_0 to x_{t-1}
                                 t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
                                 alpha_prod_t = alphas_cumprod[int(t_i)]
                                 beta_prod_t = 1 - alpha_prod_t
@@ -407,8 +384,6 @@ def main():
                                 eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
                                 x = torch.sqrt(alphas_cumprod[t_im1]) * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
                                             + eta_sigma * torch.randn_like(x)
-                            else:
-                                pass
                             
                         # set back to x_t from x_{t-1}
                         if u < iter_num_U-1 and seq[i] != seq[-1]:
@@ -450,7 +425,7 @@ def main():
                     img_total = cv2.hconcat(progress_img)
                     if show_img:
                         util.imshow(img_total,figsize=(80,4))
-                    util.imsave(img_total*255., os.path.join(E_path, img_name+f'_process_lambda_k_{lambda_}_{current_time}_psnr_{psnr}.png'))
+                    util.imsave(img_total*255., os.path.join(E_path, img_name+f'_sigma_{noise_level_img}_process_lambda_{lambda_}_{current_time}_psnr_{psnr}.png'))
                     
                 # --------------------------------
                 # (4) img_LEH
@@ -471,11 +446,11 @@ def main():
                     util.imsave(util.single2uint(img_L), os.path.join(E_path, img_name+'_k'+str(k_index)+'_LR.png'))
 
         # experiments
-        lambdas = [0.1*i for i in range(2,30)]
+        lambdas = [0.1*i for i in range(10,15)]
         for lambda_ in lambdas:
             test_rho(lambda_)
 
-        # test with the first image in the path
+        # test with the first kernel
         break
 
         # --------------------------------

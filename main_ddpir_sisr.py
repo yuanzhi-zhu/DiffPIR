@@ -302,10 +302,7 @@ def main():
                 rhos = []
                 for i in range(num_train_timesteps):
                     sigmas.append(reduced_alpha_cumprod[num_train_timesteps-1-i])
-                    if model_out_type == 'pred_xstart':
-                        sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
-                    elif model_out_type == 'pred_x_prev':
-                        sigma_ks.append(torch.sqrt(betas[i]/alphas[i]))
+                    sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
                     rhos.append(lambda_*(sigma**2)/(sigma_ks[i]**2))
                         
                 rhos, sigmas, sigma_ks = torch.tensor(rhos).to(device), torch.tensor(sigmas).to(device), torch.tensor(sigma_ks).to(device)
@@ -323,15 +320,16 @@ def main():
                 x = util.single2tensor4(x).to(device)
 
                 y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
-                y = y * 2 -1        # [-1,1]
 
                 t_y = find_nearest(reduced_alpha_cumprod,noise_level_img)
                 sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
-                x = sqrt_alpha_effective * y + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
-                        sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(y)
+                x = sqrt_alpha_effective * x + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
+                        sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(x)
                 # x = torch.randn_like(x)    
 
                 k_tensor = util.single2tensor4(np.expand_dims(k, 2)).to(device) 
+
+                FB, FBC, F2B, FBFy = sr.pre_calculate(y, k_tensor, sf)
 
                 # --------------------------------
                 # (4) main iterations
@@ -366,39 +364,16 @@ def main():
                         # --------------------------------
 
                         ### solve equation 6b with one reverse diffusion step
-                        if skip > 1 and model_out_type == 'pred_x_prev' and i != len(seq)-1:
-                            # generalized ddim sampling method
-                            t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
-                            x0 = model_fn(x, noise_level=curr_sigma*255,model_out_type='pred_xstart')
-                            # x = ((torch.sqrt(alphas_cumprod[t_im1]) * betas[t_i]) * x0 + \
-                            #     (torch.sqrt(alphas[t_i]) * sqrt_1m_alphas_cumprod[t_im1]**2) * x) \
-                            #          / (1.0 - alphas_cumprod[t_i])
-                            # x = x + sqrt_1m_alphas_cumprod[t_im1]**2 / sqrt_1m_alphas_cumprod[t_i]**2 * betas[t_i] * torch.randn_like(x)
-                            alpha_prod_t = alphas_cumprod[int(t_i)]
-                            beta_prod_t = 1 - alpha_prod_t
-                            eps = (x - alpha_prod_t ** (0.5) * x0) / beta_prod_t ** (0.5)
-                            eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
-                            x = torch.sqrt(alphas_cumprod[t_im1]) * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
-                                        + eta_sigma * torch.randn_like(x)
-                        else: 
-                            x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
-                            x0 = x
+                        x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
+                        x0 = x
                         # x = utils_model.test_mode(model_fn, x, mode=0, refield=32, min_size=256, modulo=16, vec_t=vec_t)
 
                         # --------------------------------
                         # step 2, FFT
                         # --------------------------------
 
-                        if model_out_type == 'pred_xstart':
-                            y_t = y
-                        # add noise, make the condition image noise level consistent in pixel level
-                        elif model_out_type == 'pred_x_prev':
-                            y_t = sqrt_alphas_cumprod[t_i] * (y) + sqrt_1m_alphas_cumprod[t_i] * (torch.randn_like(y))
-                            # y_t = y
                         if seq[i] != seq[-1]:
                             if sub_1_analytic:
-                                y_t = y_t / 2 + 0.5         # [0,1]
-                                FB, FBC, F2B, FBFy = sr.pre_calculate(y_t, k_tensor, sf)
                                 tau = rhos[t_i].float().repeat(1, 1, 1, 1)
                                 # when noise level less than given image noise, skip
                                 if i < num_train_timesteps-noise_model_t:  
@@ -406,16 +381,17 @@ def main():
                                     x = sr.data_solution(x.float(), FB, FBC, F2B, FBFy, tau, sf)
                                     x = x * 2 - 1
                                 else:
-                                    model_out_type = 'pred_x_prev'
+                                    # model_out_type = 'pred_x_prev'
                                     pass
                             else:
+                                # TODO: first order solver
                                 pass
                         # add noise back to t=i-1
                         if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1] and u == iter_num_U-1):
                             if i < num_train_timesteps-noise_model_t: 
                                 x = sqrt_alphas_cumprod[t_i] * (x) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
                             # for the last step without analytic solution, need to add noise with the help of model output
-                            elif i == num_train_timesteps-noise_model_t: 
+                            else: 
                                 # generalized ddim sampling method
                                 t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
                                 alpha_prod_t = alphas_cumprod[int(t_i)]
@@ -424,8 +400,6 @@ def main():
                                 eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
                                 x = torch.sqrt(alphas_cumprod[t_im1]) * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
                                             + eta_sigma * torch.randn_like(x)
-                            else:
-                                pass
                             
                         # set back to x_t from x_{t-1}
                         if u < iter_num_U-1 and seq[i] != seq[-1]:
@@ -467,7 +441,7 @@ def main():
                     img_total = cv2.hconcat(progress_img)
                     if show_img:
                         util.imshow(img_total,figsize=(80,4))
-                    util.imsave(img_total*255., os.path.join(E_path, img_name+f'_process_lambda_k_{lambda_}_{current_time}_psnr_{psnr}.png'))
+                    util.imsave(img_total*255., os.path.join(E_path, img_name+f'_sigma_{noise_level_img}_process_lambda_{lambda_}_{current_time}_psnr_{psnr}.png'))
                     
                 # --------------------------------
                 # (4) img_LEH

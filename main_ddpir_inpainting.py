@@ -64,7 +64,6 @@ def main():
     model_name              = 'diffusion_ffhq_10m'  # set diffusino model
     testset_name            = 'gts/face'        # set testing set,  'set18' | 'set24'
     mask_name               = 'gt_keep_masks/face/000000.png'
-    diffusion_N             = 1000
     iter_num                = 1000              # set number of iterations, default: 40 for demosaicing
     iter_num_U              = 1                 # set number of inner iterations, default: 1
 
@@ -76,10 +75,10 @@ def main():
     save_progressive_mask   = False             # save generation process
 
     sigma                   = max(0.01,noise_level_img)  # noise level associated with condition y
-    lambda_                 = 0.2                # key parameter lambda
+    lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
     
-    model_out_type          = 'pred_x_prev'     # pred_x_prev; pred_xstart; epsilon; score
+    model_out_type          = 'pred_xstart'     # pred_x_prev; pred_xstart; epsilon; score
     generate_mode           = 'DPIR'            # model output type: pred_x_prev; pred_xstart; epsilon; score
     skip_type               = 'uniform'         # uniform, quad
     eta                     = 0.0               # eta for ddim sampling
@@ -132,7 +131,7 @@ def main():
             batch_size=1,
             use_ddim=False,
             model_path=model_path,
-            diffusion_steps=diffusion_N,
+            diffusion_steps=num_train_timesteps,
             noise_schedule='linear',
             num_head_channels=64,
             resblock_updown=True,
@@ -263,12 +262,9 @@ def main():
             sigmas = []
             sigma_ks = []
             rhos = []
-            for i in range(diffusion_N):
+            for i in range(num_train_timesteps):
                 sigmas.append(reduced_alpha_cumprod[999-i])
-                if model_out_type == 'pred_xstart':
-                    sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
-                elif model_out_type == 'pred_x_prev':
-                    sigma_ks.append(torch.sqrt(betas[i]/alphas[i]))
+                sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
                 rhos.append(lambda_*(sigma**2)/(sigma_ks[i]**2))
                      
             rhos, sigmas, sigma_ks = torch.tensor(rhos).to(device), torch.tensor(sigmas).to(device), torch.tensor(sigma_ks).to(device)
@@ -279,13 +275,13 @@ def main():
 
             progress_img = []
             # create sequence of timestep for sampling
-            skip = diffusion_N//iter_num
+            skip = num_train_timesteps//iter_num
             if skip_type == 'uniform':
                 seq = [i*skip for i in range(iter_num)]
                 if skip > 1:
-                    seq.append(diffusion_N-1)
+                    seq.append(num_train_timesteps-1)
             elif skip_type == "quad":
-                seq = np.sqrt(np.linspace(0, diffusion_N**2, iter_num))
+                seq = np.sqrt(np.linspace(0, num_train_timesteps**2, iter_num))
                 seq = [int(s) for s in list(seq)]
                 seq[-1] = seq[-1] - 1
             progress_seq = seq[::(len(seq)//10)]
@@ -308,22 +304,7 @@ def main():
                                 + (1-mask) * x
 
                     # solve equation 6b with one reverse diffusion step
-                    if skip > 1 and model_out_type == 'pred_x_prev' and i != len(seq)-1:
-                        # generalized ddim sampling method
-                        t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
-                        x0 = model_fn(x, noise_level=curr_sigma*255,model_out_type='pred_xstart')
-                        # x = ((torch.sqrt(alphas_cumprod[t_im1]) * betas[t_i]) * x0 + \
-                        #     (torch.sqrt(alphas[t_i]) * sqrt_1m_alphas_cumprod[t_im1]**2) * x) \
-                        #          / (1.0 - alphas_cumprod[t_i])
-                        # x = x + sqrt_1m_alphas_cumprod[t_im1]**2 / sqrt_1m_alphas_cumprod[t_i]**2 * betas[t_i] * torch.randn_like(x)
-                        alpha_prod_t = alphas_cumprod[int(t_i)]
-                        beta_prod_t = 1 - alpha_prod_t
-                        eps = (x - alpha_prod_t ** (0.5) * x0) / beta_prod_t ** (0.5)
-                        eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
-                        x = torch.sqrt(alphas_cumprod[t_im1]) * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
-                                    + eta_sigma * torch.randn_like(x)
-                    else: 
-                        x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
+                    x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
 
                     # x = utils_model.test_mode(model_fn, x, mode=0, refield=32, min_size=256, modulo=16, noise_level=sigmas[i].cpu().numpy()*255)
                     # --------------------------------
@@ -332,18 +313,12 @@ def main():
 
                     # analytic solution to equation 6a
                     if generate_mode == 'DPIR': 
-                        # add noise, make the condition image noise level consistent in pixel level
-                        if model_out_type == 'pred_xstart':
-                            y_t = y
-                        elif model_out_type == 'pred_x_prev':
-                            y_t = (sqrt_alphas_cumprod[t_i] * (y) + sqrt_1m_alphas_cumprod[t_i] * (torch.randn_like(y))) * mask \
-                                        + (1-mask) * y
-
                         # solve sub-problem
                         if sub_1_analytic:
-                            x = (mask*y_t + rhos[t_i].float()*x).div(mask+rhos[t_i])
+                            x = (mask*y + rhos[t_i].float()*x).div(mask+rhos[t_i])
                         else:
-                            #x = x - 1 / (2*rhos[t_i]) * (x - y_t) * mask 
+                            # TODO: first order solver
+                            # x = x - 1 / (2*rhos[t_i]) * (x - y_t) * mask 
                             pass
 
                         if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1] and u == iter_num_U-1):
@@ -393,7 +368,7 @@ def main():
                 img_total = cv2.hconcat(progress_img)
                 if show_img:
                     util.imshow(img_total,figsize=(80,4))
-                util.imsave(img_total*255., os.path.join(E_path, img_name+f'_process_lambda_k_{lambda_}_{current_time}.png'))
+                util.imsave(img_total*255., os.path.join(E_path, img_name+f'_process_lambda_{lambda_}_{current_time}.png'))
                 images = []
                 y_t = np.squeeze((y/2+0.5).cpu().numpy())
                 if y_t.ndim == 3:
