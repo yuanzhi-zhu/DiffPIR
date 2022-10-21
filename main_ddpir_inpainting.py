@@ -75,7 +75,7 @@ def main():
     save_progressive        = True              # save generation process
     save_progressive_mask   = False             # save generation process
 
-    sigma                   = 0.01              # noise level associated with condition y
+    sigma                   = max(0.01,noise_level_img)  # noise level associated with condition y
     lambda_                 = 0.2                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
     

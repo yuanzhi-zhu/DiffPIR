@@ -63,7 +63,6 @@ def main():
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
     model_name              = 'diffusion_ffhq_10m'  #diffusion_ffhq_10m, drunet_color, set diffusino model
     testset_name            = 'set5'            # set testing set,  'set18' | 'set24'
-    diffusion_N             = 1000
     iter_num                = 1000              # set number of iterations, default: 40 for demosaicing
     iter_num_U              = 1                 # set number of inner iterations, default: 1
 
@@ -76,7 +75,7 @@ def main():
     
     t_start                 = 999               # start timestep of the diffusion process
 
-    sigma                   = 0.01              # noise level associated with condition y
+    sigma                   = max(0.01,noise_level_img)  # noise level associated with condition y
     lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
     
@@ -144,7 +143,7 @@ def main():
                 batch_size=1,
                 use_ddim=False,
                 model_path=model_path,
-                diffusion_steps=diffusion_N,
+                diffusion_steps=num_train_timesteps,
                 noise_schedule='linear',
                 num_head_channels=64,
                 resblock_updown=True,
@@ -257,7 +256,7 @@ def main():
         k = kernels[0, k_index].astype(np.float64)
         util.imshow(k) if show_img else None
 
-        def test_rho(lambda_=lambda_):
+        def test_rho(lambda_=lambda_, model_out_type=model_out_type):
             for idx, img in enumerate(L_paths):
 
                 # --------------------------------
@@ -284,7 +283,7 @@ def main():
                 sigmas = []
                 sigma_ks = []
                 rhos = []
-                for i in range(diffusion_N):
+                for i in range(num_train_timesteps):
                     sigmas.append(reduced_alpha_cumprod[999-i])
                     if model_out_type == 'pred_xstart':
                         sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
@@ -303,7 +302,10 @@ def main():
                 y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
                 y = y * 2 -1        # [-1,1]
 
-                x = sqrt_alphas_cumprod[t_start] * (y) + sqrt_1m_alphas_cumprod[t_start] * (torch.randn_like(y))
+                t_y = find_nearest(reduced_alpha_cumprod,noise_level_img)
+                sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
+                x = sqrt_alpha_effective * y + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
+                        sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(y)
                 # x = torch.randn_like(y)     
 
                 k_tensor = util.single2tensor4(np.expand_dims(k, 2)).to(device)
@@ -314,13 +316,13 @@ def main():
 
                 progress_img = []
                 # create sequence of timestep for sampling
-                skip = diffusion_N//iter_num
+                skip = num_train_timesteps//iter_num
                 if skip_type == 'uniform':
                     seq = [i*skip for i in range(iter_num)]
                     if skip > 1:
-                        seq.append(diffusion_N-1)
+                        seq.append(num_train_timesteps-1)
                 elif skip_type == "quad":
-                    seq = np.sqrt(np.linspace(0, diffusion_N**2, iter_num))
+                    seq = np.sqrt(np.linspace(0, num_train_timesteps**2, iter_num))
                     seq = [int(s) for s in list(seq)]
                     seq[-1] = seq[-1] - 1
                 progress_seq = seq[::(len(seq)//10)]
@@ -380,7 +382,7 @@ def main():
                                 FB, FBC, F2B, FBFy = sr.pre_calculate(y_t, k_tensor, sf)
                                 tau = rhos[t_i].float().repeat(1, 1, 1, 1)
                                 # when noise level less than given image noise, skip
-                                if i < diffusion_N-noise_model_t:
+                                if i < num_train_timesteps-noise_model_t:
                                     x = x / 2 + 0.5
                                     x = sr.data_solution(x, FB, FBC, F2B, FBFy, tau, sf)
                                     x = x * 2 - 1
@@ -431,6 +433,11 @@ def main():
                 # --------------------------------
 
                 img_E = util.tensor2uint(x_0)
+
+                psnr = util.calculate_psnr(img_E, img_H, border=border)  # change with your own border
+                test_results['psnr'].append(psnr)
+                logger.info('{:->4d}--> {:>10s} --k:{:>2d} PSNR: {:.2f}dB'.format(idx+1, img_name+ext, k_index, psnr))
+
                 if n_channels == 1:
                     img_H = img_H.squeeze()
 
@@ -443,7 +450,7 @@ def main():
                     img_total = cv2.hconcat(progress_img)
                     if show_img:
                         util.imshow(img_total,figsize=(80,4))
-                    util.imsave(img_total*255., os.path.join(E_path, img_name+f'_process_lambda_k_{lambda_}_{current_time}.png'))
+                    util.imsave(img_total*255., os.path.join(E_path, img_name+f'_process_lambda_k_{lambda_}_{current_time}_psnr_{psnr}.png'))
                     
                 # --------------------------------
                 # (4) img_LEH
@@ -462,10 +469,6 @@ def main():
 
                 if save_L:
                     util.imsave(util.single2uint(img_L), os.path.join(E_path, img_name+'_k'+str(k_index)+'_LR.png'))
-
-                psnr = util.calculate_psnr(img_E, img_H, border=border)  # change with your own border
-                test_results['psnr'].append(psnr)
-                logger.info('{:->4d}--> {:>10s} --k:{:>2d} PSNR: {:.2f}dB'.format(idx+1, img_name+ext, k_index, psnr))
 
         # experiments
         lambdas = [0.1*i for i in range(2,30)]

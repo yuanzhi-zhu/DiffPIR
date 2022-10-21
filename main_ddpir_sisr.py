@@ -79,7 +79,7 @@ def main():
     save_progressive        = True              # save generation process
     border                  = 0
 
-    sigma                   = 0.01              # noise level associated with condition y
+    sigma                   = max(0.01,noise_level_img)  # noise level associated with condition y
     lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
     
@@ -325,7 +325,10 @@ def main():
                 y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
                 y = y * 2 -1        # [-1,1]
 
-                x = sqrt_alphas_cumprod[t_start] * (x) + sqrt_1m_alphas_cumprod[t_start] * (torch.randn_like(x))
+                t_y = find_nearest(reduced_alpha_cumprod,noise_level_img)
+                sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
+                x = sqrt_alpha_effective * y + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
+                        sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(y)
                 # x = torch.randn_like(x)    
 
                 k_tensor = util.single2tensor4(np.expand_dims(k, 2)).to(device) 
