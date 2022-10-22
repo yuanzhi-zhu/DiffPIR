@@ -10,10 +10,10 @@ from scipy import ndimage
 
 import torch
 
+from utils import utils_model
 from utils import utils_logger
 from utils import utils_sisr as sr
 from utils import utils_image as util
-from utils import utils_model
 
 from guided_diffusion import dist_util
 from guided_diffusion.script_util import (
@@ -79,6 +79,7 @@ def main():
     lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
     
+    log_process             = False
     ddim_sample             = False             # sampling method
     model_out_type          = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
     skip_type               = 'uniform'         # uniform, quad
@@ -131,52 +132,47 @@ def main():
     # load model
     # ----------------------------------------
 
-    if 'drunet' in model_name:
-        from models.network_unet import UNetRes as net
-        model = net(in_nc=n_channels+1, out_nc=n_channels, nc=[64, 128, 256, 512], nb=4, act_mode='R', downsample_mode="strideconv", upsample_mode="convtranspose")
-        model.load_state_dict(torch.load(model_path), strict=True)
-    elif 'diffusion' in model_name:
-        def create_argparser():
-            defaults = dict(
-                clip_denoised=True,
-                num_samples=1,
-                batch_size=1,
-                use_ddim=False,
-                model_path=model_path,
-                diffusion_steps=num_train_timesteps,
-                noise_schedule='linear',
-                num_head_channels=64,
-                resblock_updown=True,
-                use_fp16=False,
-                use_scale_shift_norm=True,
-                num_heads=4,
-                num_heads_upsample=-1,
-                use_new_attention_order=False,
-                timestep_respacing="",
-                use_kl=False,
-                predict_xstart=False,
-                rescale_timesteps=False,
-                rescale_learned_sigmas=False,
-                channel_mult="",
-                learn_sigma=True,
-                class_cond=False,
-                use_checkpoint=False,
-                image_size=256,
-                num_channels=128,
-                num_res_blocks=1,
-                attention_resolutions="16",
-                dropout=0.1,
-            )
-            # defaults.update(model_and_diffusion_defaults())
-            parser = argparse.ArgumentParser()
-            add_dict_to_argparser(parser, defaults)
-            return parser
-        args = create_argparser().parse_args([])
-        model, diffusion = create_model_and_diffusion(
-            **args_to_dict(args, model_and_diffusion_defaults().keys()))
-        model.load_state_dict(
-            dist_util.load_state_dict(args.model_path, map_location="cpu")
+    def create_argparser():
+        defaults = dict(
+            clip_denoised=True,
+            num_samples=1,
+            batch_size=1,
+            use_ddim=False,
+            model_path=model_path,
+            diffusion_steps=num_train_timesteps,
+            noise_schedule='linear',
+            num_head_channels=64,
+            resblock_updown=True,
+            use_fp16=False,
+            use_scale_shift_norm=True,
+            num_heads=4,
+            num_heads_upsample=-1,
+            use_new_attention_order=False,
+            timestep_respacing="",
+            use_kl=False,
+            predict_xstart=False,
+            rescale_timesteps=False,
+            rescale_learned_sigmas=False,
+            channel_mult="",
+            learn_sigma=True,
+            class_cond=False,
+            use_checkpoint=False,
+            image_size=256,
+            num_channels=128,
+            num_res_blocks=1,
+            attention_resolutions="16",
+            dropout=0.1,
         )
+        # defaults.update(model_and_diffusion_defaults())
+        parser = argparse.ArgumentParser()
+        add_dict_to_argparser(parser, defaults)
+        return parser
+    args = create_argparser().parse_args([])
+    model, diffusion = create_model_and_diffusion(
+        **args_to_dict(args, model_and_diffusion_defaults().keys()))
+    model.load_state_dict(
+        dist_util.load_state_dict(args.model_path, map_location="cpu")
+    )
     model.eval()
     for k, v in model.named_parameters():
         v.requires_grad = False
@@ -339,15 +335,10 @@ def main():
                         # step 1, reverse diffsuion step
                         # --------------------------------
 
-                        if 'drunet' in model_name:
-                            x = torch.cat((x, sigmas[i].float().repeat(1, 1, x.shape[2], x.shape[3])), dim=1)
-                            x = utils_model.test_mode(model, x, mode=2, refield=32, min_size=256, modulo=16)
-
-                        elif 'diffusion' in model_name:
-                            # solve equation 6b with one reverse diffusion step
-                            x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
-                            x0 = x
-                            # x = utils_model.test_mode(model_fn, x, mode=0, refield=32, min_size=256, modulo=16, vec_t=vec_t)
+                        # solve equation 6b with one reverse diffusion step
+                        x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
+                        # x = utils_model.test_mode(model_fn, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255)
+                        x0 = x
 
                         # --------------------------------
                         # step 2, FFT
@@ -397,7 +388,8 @@ def main():
                         if x_show.ndim == 3:
                             x_show = np.transpose(x_show, (1, 2, 0))
                         progress_img.append(x_show)
-                        logger.info('{:>4d}, steps: {:>4d}, np.max(x_show): {:.4f}, np.min(x_show): {:.4f}'.format(seq[i], t_i, np.max(x_show), np.min(x_show)))
+                        if log_process:
+                            logger.info('{:>4d}, steps: {:>4d}, np.max(x_show): {:.4f}, np.min(x_show): {:.4f}'.format(seq[i], t_i, np.max(x_show), np.min(x_show)))
                         
                         if show_img:
                             util.imshow(x_show)

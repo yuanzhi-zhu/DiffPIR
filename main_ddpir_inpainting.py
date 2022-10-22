@@ -81,9 +81,9 @@ def main():
     model_out_type          = 'pred_xstart'     # pred_x_prev; pred_xstart; epsilon; score
     generate_mode           = 'DPIR'            # model output type: pred_x_prev; pred_xstart; epsilon; score
     skip_type               = 'uniform'         # uniform, quad
-    eta                     = 0.0               # eta for ddim sampling
     ddim_sample             = False             # sampling method
     
+    log_process             = False
     task_current            = 'ip'              # 'ip' for inpainting
     n_channels              = 3                 # fixed
     cwd                     = '/cluster/work/cvl/jinliang/ckpts_yuazhu/DDPIR/'
@@ -335,7 +335,8 @@ def main():
                     if x_show.ndim == 3:
                         x_show = np.transpose(x_show, (1, 2, 0))
                     progress_img.append(x_show)
-                    logger.info('{:>4d}, steps: {:>4d}, np.max(x_show): {:.4f}, np.min(x_show): {:.4f}'.format(seq[i], t_i, np.max(x_show), np.min(x_show)))
+                    if log_process:
+                        logger.info('{:>4d}, steps: {:>4d}, np.max(x_show): {:.4f}, np.min(x_show): {:.4f}'.format(seq[i], t_i, np.max(x_show), np.min(x_show)))
                     if show_img:
                         util.imshow(x_show)
 

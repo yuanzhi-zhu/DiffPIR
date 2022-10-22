@@ -9,6 +9,7 @@ import hdf5storage
 
 import torch
 
+from utils import utils_model
 from utils import utils_logger
 from utils import utils_sisr as sr
 from utils import utils_image as util
@@ -85,6 +86,7 @@ def main():
     
     t_start                 = 999               # start timestep of the diffusion process
     
+    log_process             = False
     ddim_sample             = False             # sampling method
     model_out_type          = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
     skip_type               = 'uniform'         # uniform, quad
@@ -271,205 +273,214 @@ def main():
 
             util.surf(k) if show_img else None
 
-            for idx, img in enumerate(L_paths):
+            def test_rho(lambda_=lambda_, model_out_type=model_out_type):
+                for idx, img in enumerate(L_paths):
 
-                # --------------------------------
-                # (1) get img_L
-                # --------------------------------
+                    # --------------------------------
+                    # (1) get img_L
+                    # --------------------------------
 
-                img_name, ext = os.path.splitext(os.path.basename(img))
-                img_H = util.imread_uint(img, n_channels=n_channels)
-                img_H = util.modcrop(img_H, sf)  # modcrop
+                    img_name, ext = os.path.splitext(os.path.basename(img))
+                    img_H = util.imread_uint(img, n_channels=n_channels)
+                    img_H = util.modcrop(img_H, sf)  # modcrop
 
-                if classical_degradation:
-                    img_L = sr.classical_degradation(img_H, k, sf)
-                    util.imshow(img_L) if show_img else None
-                    img_L = util.uint2single(img_L)
-                else:
-                    img_L = util.imresize_np(util.uint2single(img_H), 1/sf)
-
-                np.random.seed(seed=0)  # for reproducibility
-                img_L = img_L * 2 - 1
-                img_L += np.random.normal(0, noise_level_img * 2, img_L.shape) # add AWGN
-                img_L = img_L / 2 + 0.5
-
-                # --------------------------------
-                # (2) get rhos and sigmas
-                # -------------------------------- 
-
-                sigmas = []
-                sigma_ks = []
-                rhos = []
-                for i in range(num_train_timesteps):
-                    sigmas.append(reduced_alpha_cumprod[num_train_timesteps-1-i])
-                    sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
-                    rhos.append(lambda_*(sigma**2)/(sigma_ks[i]**2))
-                        
-                rhos, sigmas, sigma_ks = torch.tensor(rhos).to(device), torch.tensor(sigmas).to(device), torch.tensor(sigma_ks).to(device)
-                
-                # --------------------------------
-                # (3) initialize x, and pre-calculation
-                # --------------------------------
-
-                x = cv2.resize(img_L, (img_L.shape[1]*sf, img_L.shape[0]*sf), interpolation=cv2.INTER_CUBIC)
-                if np.ndim(x)==2:
-                    x = x[..., None]
-
-                if classical_degradation:
-                    x = sr.shift_pixel(x, sf)
-                x = util.single2tensor4(x).to(device)
-
-                y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
-
-                t_y = find_nearest(reduced_alpha_cumprod,noise_level_img)
-                sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
-                x = sqrt_alpha_effective * x + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
-                        sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(x)
-                # x = torch.randn_like(x)    
-
-                k_tensor = util.single2tensor4(np.expand_dims(k, 2)).to(device) 
-
-                FB, FBC, F2B, FBFy = sr.pre_calculate(y, k_tensor, sf)
-
-                # --------------------------------
-                # (4) main iterations
-                # --------------------------------
-
-                progress_img = []
-                # create sequence of timestep for sampling
-                skip = num_train_timesteps//iter_num
-                if skip_type == 'uniform':
-                    seq = [i*skip for i in range(iter_num)]
-                    if skip > 1:
-                        seq.append(num_train_timesteps-1)
-                elif skip_type == "quad":
-                    seq = np.sqrt(np.linspace(0, num_train_timesteps**2, iter_num))
-                    seq = [int(s) for s in list(seq)]
-                    seq[-1] = seq[-1] - 1
-                progress_seq = seq[::(len(seq)//10)]
-                progress_seq.append(seq[-1])
-                
-                # reverse diffusion for one image from random noise
-                for i in range(len(seq)):
-                    curr_sigma = sigmas[seq[i]].cpu().numpy()
-                    # time step associated with the noise level sigmas[i]
-                    t_i = find_nearest(reduced_alpha_cumprod,curr_sigma)
-                    # skip iters
-                    if t_i > t_start:
-                        continue
-                    # repeat for semantic consistence: from repaint
-                    for u in range(iter_num_U):
-                        # --------------------------------
-                        # step 1, reverse diffsuion step
-                        # --------------------------------
-
-                        ### solve equation 6b with one reverse diffusion step
-                        x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
-                        x0 = x
-                        # x = utils_model.test_mode(model_fn, x, mode=0, refield=32, min_size=256, modulo=16, vec_t=vec_t)
-
-                        # --------------------------------
-                        # step 2, FFT
-                        # --------------------------------
-
-                        if seq[i] != seq[-1]:
-                            if sub_1_analytic:
-                                tau = rhos[t_i].float().repeat(1, 1, 1, 1)
-                                # when noise level less than given image noise, skip
-                                if i < num_train_timesteps-noise_model_t:  
-                                    x = x / 2 + 0.5
-                                    x = sr.data_solution(x.float(), FB, FBC, F2B, FBFy, tau, sf)
-                                    x = x * 2 - 1
-                                else:
-                                    # model_out_type = 'pred_x_prev'
-                                    pass
-                            else:
-                                # TODO: first order solver
-                                pass
-                        # add noise back to t=i-1
-                        if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1] and u == iter_num_U-1):
-                            if i < num_train_timesteps-noise_model_t: 
-                                x = sqrt_alphas_cumprod[t_i] * (x) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
-                            # for the last step without analytic solution, need to add noise with the help of model output
-                            else: 
-                                # generalized ddim sampling method
-                                t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
-                                alpha_prod_t = alphas_cumprod[int(t_i)]
-                                beta_prod_t = 1 - alpha_prod_t
-                                eps = (x - alpha_prod_t ** (0.5) * x0) / beta_prod_t ** (0.5)
-                                eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
-                                x = torch.sqrt(alphas_cumprod[t_im1]) * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
-                                            + eta_sigma * torch.randn_like(x)
-                            
-                        # set back to x_t from x_{t-1}
-                        if u < iter_num_U-1 and seq[i] != seq[-1]:
-                            x = torch.sqrt(alphas[t_i]) * x + torch.sqrt(betas[t_i]) * torch.randn_like(x)
-                                
-
-                    # save the process
-                    if save_progressive and (seq[i] in progress_seq):
-                        x_0 = (x/2+0.5)
-                        x_show = x_0.clone().detach().cpu().numpy()       #[0,1]
-                        x_show = np.squeeze(x_show)
-                        if x_show.ndim == 3:
-                            x_show = np.transpose(x_show, (1, 2, 0))
-                        progress_img.append(x_show)
-                        logger.info('{:>4d}, steps: {:>4d}, np.max(x_show): {:.4f}, np.min(x_show): {:.4f}'.format(seq[i], t_i, np.max(x_show), np.min(x_show)))
-                        
-                        if show_img:
-                            util.imshow(x_show)
-
-                # --------------------------------
-                # (3) img_E
-                # --------------------------------
-
-                img_E = util.tensor2uint(x_0)
-
-                psnr = util.calculate_psnr(img_E, img_H, border=border)
-                test_results['psnr'].append(psnr)
-                logger.info('{:->4d}--> {:>10s} -- sf:{:>1d} --k:{:>2d} PSNR: {:.2f}dB'.format(idx+1, img_name+ext, sf, k_index, psnr))
-
-                if save_E:
-                    util.imsave(img_E, os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_'+model_name+'.png'))
-
-                if n_channels == 1:
-                    img_H = img_H.squeeze()
-
-                if save_progressive:
-                    now = datetime.now()
-                    current_time = now.strftime("%Y_%m_%d_%H_%M_%S")
-                    img_total = cv2.hconcat(progress_img)
-                    if show_img:
-                        util.imshow(img_total,figsize=(80,4))
-                    util.imsave(img_total*255., os.path.join(E_path, img_name+f'_sigma_{noise_level_img}_process_lambda_{lambda_}_{current_time}_psnr_{psnr}.png'))
-                    
-                # --------------------------------
-                # (4) img_LEH
-                # --------------------------------
-
-                img_L = util.single2uint(img_L).squeeze()
-
-                if save_LEH:
-                    k_v = k/np.max(k)*1.0
-                    if n_channels==1:
-                        k_v = util.single2uint(k_v)
+                    if classical_degradation:
+                        img_L = sr.classical_degradation(img_H, k, sf)
+                        util.imshow(img_L) if show_img else None
+                        img_L = util.uint2single(img_L)
                     else:
-                        k_v = util.single2uint(np.tile(k_v[..., np.newaxis], [1, 1, n_channels]))
-                    k_v = cv2.resize(k_v, (3*k_v.shape[1], 3*k_v.shape[0]), interpolation=cv2.INTER_NEAREST)
-                    img_I = cv2.resize(img_L, (sf*img_L.shape[1], sf*img_L.shape[0]), interpolation=cv2.INTER_NEAREST)
-                    img_I[:k_v.shape[0], -k_v.shape[1]:, ...] = k_v
-                    img_I[:img_L.shape[0], :img_L.shape[1], ...] = img_L
-                    util.imshow(np.concatenate([img_I, img_E, img_H], axis=1), title='LR / Recovered / Ground-truth') if show_img else None
-                    util.imsave(np.concatenate([img_I, img_E, img_H], axis=1), os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_LEH.png'))
+                        img_L = util.imresize_np(util.uint2single(img_H), 1/sf)
 
-                if save_L:
-                    util.imsave(img_L, os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_LR.png'))
+                    np.random.seed(seed=0)  # for reproducibility
+                    img_L = img_L * 2 - 1
+                    img_L += np.random.normal(0, noise_level_img * 2, img_L.shape) # add AWGN
+                    img_L = img_L / 2 + 0.5
 
-                if n_channels == 3:
-                    img_E_y = util.rgb2ycbcr(img_E, only_y=True)
-                    img_H_y = util.rgb2ycbcr(img_H, only_y=True)
-                    psnr_y = util.calculate_psnr(img_E_y, img_H_y, border=border)
-                    test_results['psnr_y'].append(psnr_y)
+                    # --------------------------------
+                    # (2) get rhos and sigmas
+                    # -------------------------------- 
+
+                    sigmas = []
+                    sigma_ks = []
+                    rhos = []
+                    for i in range(num_train_timesteps):
+                        sigmas.append(reduced_alpha_cumprod[num_train_timesteps-1-i])
+                        sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
+                        rhos.append(lambda_*(sigma**2)/(sigma_ks[i]**2))
+                            
+                    rhos, sigmas, sigma_ks = torch.tensor(rhos).to(device), torch.tensor(sigmas).to(device), torch.tensor(sigma_ks).to(device)
+                    
+                    # --------------------------------
+                    # (3) initialize x, and pre-calculation
+                    # --------------------------------
+
+                    x = cv2.resize(img_L, (img_L.shape[1]*sf, img_L.shape[0]*sf), interpolation=cv2.INTER_CUBIC)
+                    if np.ndim(x)==2:
+                        x = x[..., None]
+
+                    if classical_degradation:
+                        x = sr.shift_pixel(x, sf)
+                    x = util.single2tensor4(x).to(device)
+
+                    y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
+
+                    t_y = find_nearest(reduced_alpha_cumprod,noise_level_img)
+                    sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
+                    x = sqrt_alpha_effective * x + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
+                            sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(x)
+                    # x = torch.randn_like(x)    
+
+                    k_tensor = util.single2tensor4(np.expand_dims(k, 2)).to(device) 
+
+                    FB, FBC, F2B, FBFy = sr.pre_calculate(y, k_tensor, sf)
+
+                    # --------------------------------
+                    # (4) main iterations
+                    # --------------------------------
+
+                    progress_img = []
+                    # create sequence of timestep for sampling
+                    skip = num_train_timesteps//iter_num
+                    if skip_type == 'uniform':
+                        seq = [i*skip for i in range(iter_num)]
+                        if skip > 1:
+                            seq.append(num_train_timesteps-1)
+                    elif skip_type == "quad":
+                        seq = np.sqrt(np.linspace(0, num_train_timesteps**2, iter_num))
+                        seq = [int(s) for s in list(seq)]
+                        seq[-1] = seq[-1] - 1
+                    progress_seq = seq[::(len(seq)//10)]
+                    progress_seq.append(seq[-1])
+                    
+                    # reverse diffusion for one image from random noise
+                    for i in range(len(seq)):
+                        curr_sigma = sigmas[seq[i]].cpu().numpy()
+                        # time step associated with the noise level sigmas[i]
+                        t_i = find_nearest(reduced_alpha_cumprod,curr_sigma)
+                        # skip iters
+                        if t_i > t_start:
+                            continue
+                        # repeat for semantic consistence: from repaint
+                        for u in range(iter_num_U):
+                            # --------------------------------
+                            # step 1, reverse diffsuion step
+                            # --------------------------------
+
+                            ### solve equation 6b with one reverse diffusion step
+                            x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
+                            # x = utils_model.test_mode(model_fn, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255)
+                            x0 = x
+
+                            # --------------------------------
+                            # step 2, FFT
+                            # --------------------------------
+
+                            if seq[i] != seq[-1]:
+                                if sub_1_analytic:
+                                    tau = rhos[t_i].float().repeat(1, 1, 1, 1)
+                                    # when noise level less than given image noise, skip
+                                    if i < num_train_timesteps-noise_model_t:  
+                                        x = x / 2 + 0.5
+                                        x = sr.data_solution(x.float(), FB, FBC, F2B, FBFy, tau, sf)
+                                        x = x * 2 - 1
+                                    else:
+                                        # model_out_type = 'pred_x_prev'
+                                        pass
+                                else:
+                                    # TODO: first order solver
+                                    pass
+                            # add noise back to t=i-1
+                            if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1] and u == iter_num_U-1):
+                                if i < num_train_timesteps-noise_model_t: 
+                                    x = sqrt_alphas_cumprod[t_i] * (x) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
+                                # for the last step without analytic solution, need to add noise with the help of model output
+                                else: 
+                                    # generalized ddim sampling method
+                                    t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
+                                    alpha_prod_t = alphas_cumprod[int(t_i)]
+                                    beta_prod_t = 1 - alpha_prod_t
+                                    eps = (x - alpha_prod_t ** (0.5) * x0) / beta_prod_t ** (0.5)
+                                    eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
+                                    x = torch.sqrt(alphas_cumprod[t_im1]) * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
+                                                + eta_sigma * torch.randn_like(x)
+                                
+                            # set back to x_t from x_{t-1}
+                            if u < iter_num_U-1 and seq[i] != seq[-1]:
+                                x = torch.sqrt(alphas[t_i]) * x + torch.sqrt(betas[t_i]) * torch.randn_like(x)
+                                    
+
+                        # save the process
+                        if save_progressive and (seq[i] in progress_seq):
+                            x_0 = (x/2+0.5)
+                            x_show = x_0.clone().detach().cpu().numpy()       #[0,1]
+                            x_show = np.squeeze(x_show)
+                            if x_show.ndim == 3:
+                                x_show = np.transpose(x_show, (1, 2, 0))
+                            progress_img.append(x_show)
+                            if log_process:
+                                logger.info('{:>4d}, steps: {:>4d}, np.max(x_show): {:.4f}, np.min(x_show): {:.4f}'.format(seq[i], t_i, np.max(x_show), np.min(x_show)))
+                            
+                            if show_img:
+                                util.imshow(x_show)
+
+                    # --------------------------------
+                    # (3) img_E
+                    # --------------------------------
+
+                    img_E = util.tensor2uint(x_0)
+
+                    psnr = util.calculate_psnr(img_E, img_H, border=border)
+                    test_results['psnr'].append(psnr)
+                    logger.info('{:->4d}--> {:>10s} -- sf:{:>1d} --k:{:>2d} PSNR: {:.2f}dB'.format(idx+1, img_name+ext, sf, k_index, psnr))
+
+                    if save_E:
+                        util.imsave(img_E, os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_'+model_name+'.png'))
+
+                    if n_channels == 1:
+                        img_H = img_H.squeeze()
+
+                    if save_progressive:
+                        now = datetime.now()
+                        current_time = now.strftime("%Y_%m_%d_%H_%M_%S")
+                        img_total = cv2.hconcat(progress_img)
+                        if show_img:
+                            util.imshow(img_total,figsize=(80,4))
+                        util.imsave(img_total*255., os.path.join(E_path, img_name+f'_sigma_{noise_level_img}_process_lambda_{lambda_}_{current_time}_psnr_{psnr}.png'))
+                        
+                    # --------------------------------
+                    # (4) img_LEH
+                    # --------------------------------
+
+                    img_L = util.single2uint(img_L).squeeze()
+
+                    if save_LEH:
+                        k_v = k/np.max(k)*1.0
+                        if n_channels==1:
+                            k_v = util.single2uint(k_v)
+                        else:
+                            k_v = util.single2uint(np.tile(k_v[..., np.newaxis], [1, 1, n_channels]))
+                        k_v = cv2.resize(k_v, (3*k_v.shape[1], 3*k_v.shape[0]), interpolation=cv2.INTER_NEAREST)
+                        img_I = cv2.resize(img_L, (sf*img_L.shape[1], sf*img_L.shape[0]), interpolation=cv2.INTER_NEAREST)
+                        img_I[:k_v.shape[0], -k_v.shape[1]:, ...] = k_v
+                        img_I[:img_L.shape[0], :img_L.shape[1], ...] = img_L
+                        util.imshow(np.concatenate([img_I, img_E, img_H], axis=1), title='LR / Recovered / Ground-truth') if show_img else None
+                        util.imsave(np.concatenate([img_I, img_E, img_H], axis=1), os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_LEH.png'))
+
+                    if save_L:
+                        util.imsave(img_L, os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_LR.png'))
+
+                    if n_channels == 3:
+                        img_E_y = util.rgb2ycbcr(img_E, only_y=True)
+                        img_H_y = util.rgb2ycbcr(img_H, only_y=True)
+                        psnr_y = util.calculate_psnr(img_E_y, img_H_y, border=border)
+                        test_results['psnr_y'].append(psnr_y)
+
+
+        # experiments
+        lambdas = [0.1*i for i in range(2,15)]
+        for lambda_ in lambdas:
+            test_rho(lambda_)
+
 
             # --------------------------------
             # Average PSNR for all kernels
