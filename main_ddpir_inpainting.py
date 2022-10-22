@@ -1,6 +1,5 @@
 import os.path
 import logging
-from re import T
 
 import cv2
 import torch
@@ -61,7 +60,7 @@ def main():
 
     noise_level_img         = 0/255.0           # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
-    model_name              = 'diffusion_ffhq_10m'  # set diffusino model
+    model_name              = 'diffusion_celeba256_250000'  # diffusion_celeba256_250000, diffusion_ffhq_10m set diffusino model
     testset_name            = 'gts/face'        # set testing set,  'set18' | 'set24'
     mask_name               = 'gt_keep_masks/face/000000.png'
     iter_num                = 1000              # set number of iterations, default: 40 for demosaicing
@@ -77,6 +76,7 @@ def main():
     sigma                   = max(0.01,noise_level_img)  # noise level associated with condition y
     lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
+    eta                     = 1.0                # eta for ddim samplingn  
     
     model_out_type          = 'pred_xstart'     # pred_x_prev; pred_xstart; epsilon; score
     generate_mode           = 'DPIR'            # model output type: pred_x_prev; pred_xstart; epsilon; score
@@ -150,9 +150,9 @@ def main():
             class_cond=False,
             use_checkpoint=False,
             image_size=256,
-            num_channels=128,
-            num_res_blocks=1,
-            attention_resolutions="16",
+            num_channels=256,
+            num_res_blocks=2,
+            attention_resolutions="8,16,32",
             dropout=0.1,
         )
         # defaults.update(model_and_diffusion_defaults())
@@ -304,8 +304,10 @@ def main():
                                 + (1-mask) * x
 
                     # solve equation 6b with one reverse diffusion step
-                    x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
-
+                    if model_out_type == 'pred_xstart':
+                        x0 = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
+                    else:
+                        x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
                     # x = utils_model.test_mode(model_fn, x, mode=0, refield=32, min_size=256, modulo=16, noise_level=sigmas[i].cpu().numpy()*255)
                     # --------------------------------
                     # step 2, closed-form solution
@@ -315,14 +317,24 @@ def main():
                     if generate_mode == 'DPIR': 
                         # solve sub-problem
                         if sub_1_analytic:
-                            x = (mask*y + rhos[t_i].float()*x).div(mask+rhos[t_i])
+                            if model_out_type == 'pred_xstart':
+                                x0 = (mask*y + rhos[t_i].float()*x0).div(mask+rhos[t_i])
+                            else:
+                                x = (mask*y + rhos[t_i].float()*x).div(mask+rhos[t_i])
                         else:
                             # TODO: first order solver
                             # x = x - 1 / (2*rhos[t_i]) * (x - y_t) * mask 
                             pass
 
-                        if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1] and u == iter_num_U-1):
-                            x = sqrt_alphas_cumprod[t_i] * (x) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
+                    if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1]):
+                        # x = sqrt_alphas_cumprod[t_i] * (x) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x) # x = sqrt_alphas_cumprod[t_i] * (x) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
+                        
+                        t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
+                        # calculate \hat{\eposilon}
+                        eps = (x - sqrt_alphas_cumprod[t_i] * x0) / sqrt_1m_alphas_cumprod[t_i]
+                        eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
+                        x = sqrt_alphas_cumprod[t_im1] * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
+                                    + eta_sigma * torch.randn_like(x)
                         
                     # set back to x_t from x_{t-1}
                     if u < iter_num_U-1 and seq[i] != seq[-1]:
@@ -385,6 +397,7 @@ def main():
 
             # test with the first image in the path
             break
+
 
     # experiments
     lambdas = [0.1*i for i in range(10,30)]

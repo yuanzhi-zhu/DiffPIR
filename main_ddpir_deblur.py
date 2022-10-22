@@ -81,7 +81,7 @@ def main():
     
     log_process             = False
     ddim_sample             = False             # sampling method
-    model_out_type          = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
+    model_output_type       = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
     skip_type               = 'uniform'         # uniform, quad
     eta                     = 0.2                # eta for ddim sampling
     
@@ -192,7 +192,7 @@ def main():
         idx = (np.abs(array - value)).argmin()
         return idx
 
-    def model_fn(x, noise_level, vec_t=None, model_out_type=model_out_type, **model_kwargs):
+    def model_fn(x, noise_level, vec_t=None, model_out_type=model_output_type, **model_kwargs):
         # time step corresponding to noise level
         if not torch.is_tensor(vec_t):
             t_step = find_nearest(reduced_alpha_cumprod,(noise_level/255.))
@@ -242,7 +242,7 @@ def main():
     test_results_ave = OrderedDict()
     test_results_ave['psnr'] = []  # record average PSNR for each kernel
     
-    noise_model_t = find_nearest(reduced_alpha_cumprod,noise_level_model)
+    noise_model_t = find_nearest(reduced_alpha_cumprod, 2 * noise_level_model)
 
     for k_index in range(kernels.shape[1]):
 
@@ -252,8 +252,9 @@ def main():
         k = kernels[0, k_index].astype(np.float64)
         util.imshow(k) if show_img else None
 
-        def test_rho(lambda_=lambda_):
+        def test_rho(lambda_=lambda_, model_output_type=model_output_type):
             for idx, img in enumerate(L_paths):
+                model_out_type = model_output_type
 
                 # --------------------------------
                 # (1) get img_L
@@ -336,9 +337,8 @@ def main():
                         # --------------------------------
 
                         # solve equation 6b with one reverse diffusion step
-                        x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
+                        x0 = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
                         # x = utils_model.test_mode(model_fn, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255)
-                        x0 = x
 
                         # --------------------------------
                         # step 2, FFT
@@ -346,15 +346,17 @@ def main():
 
                         if seq[i] != seq[-1]:
                             if sub_1_analytic:
-                                tau = rhos[t_i].float().repeat(1, 1, 1, 1)
-                                # when noise level less than given image noise, skip
-                                if i < num_train_timesteps-noise_model_t:
-                                    x = x / 2 + 0.5
-                                    x = sr.data_solution(x, FB, FBC, F2B, FBFy, tau, sf)
-                                    x = x * 2 - 1
-                                else:
-                                    # model_out_type = 'pred_x_prev'
-                                    pass
+                                if model_out_type == 'pred_xstart':
+                                    tau = rhos[t_i].float().repeat(1, 1, 1, 1)
+                                    # when noise level less than given image noise, skip
+                                    if i < num_train_timesteps-noise_model_t:   
+                                        x0 = x0 / 2 + 0.5
+                                        x0 = sr.data_solution(x0.float(), FB, FBC, F2B, FBFy, tau, sf)
+                                        x0 = x0 * 2 - 1
+                                    else:
+                                        model_out_type = 'pred_x_prev'
+                                        x0 = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
+                                        pass
                             else:
                                 # TODO: first order solver
                                 #Tx = ndimage.filters.convolve(x, np.expand_dims(k, axis=2), mode='wrap')
@@ -362,19 +364,16 @@ def main():
                                 pass
 
                         if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1] and u == iter_num_U-1):
-                            if i < num_train_timesteps-noise_model_t: 
-                                x = sqrt_alphas_cumprod[t_i] * (x) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
-                            # for the last step without analytic solution, need to add noise with the help of model output
-                            else: 
-                                # generalized ddim sampling method, with correction from model
-                                # from x_0 to x_{t-1}
-                                t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
-                                alpha_prod_t = alphas_cumprod[int(t_i)]
-                                beta_prod_t = 1 - alpha_prod_t
-                                eps = (x - alpha_prod_t ** (0.5) * x0) / beta_prod_t ** (0.5)
-                                eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
-                                x = torch.sqrt(alphas_cumprod[t_im1]) * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
-                                            + eta_sigma * torch.randn_like(x)
+                            #x = sqrt_alphas_cumprod[t_i] * (x0) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
+                            
+                            t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
+                            # calculate \hat{\eposilon}
+                            eps = (x - sqrt_alphas_cumprod[t_i] * x0) / sqrt_1m_alphas_cumprod[t_i]
+                            eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
+                            x = sqrt_alphas_cumprod[t_im1] * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
+                                        + eta_sigma * torch.randn_like(x)
+                        else:
+                            x = x0
                             
                         # set back to x_t from x_{t-1}
                         if u < iter_num_U-1 and seq[i] != seq[-1]:
@@ -440,7 +439,7 @@ def main():
         # experiments
         lambdas = [0.1*i for i in range(10,15)]
         for lambda_ in lambdas:
-            test_rho(lambda_)
+            test_rho(lambda_, model_output_type=model_output_type)
 
         # test with the first kernel
         break
