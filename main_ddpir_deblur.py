@@ -110,6 +110,7 @@ def main():
     sqrt_1m_alphas_cumprod  = torch.sqrt(1. - alphas_cumprod)
     reduced_alpha_cumprod   = torch.div(sqrt_1m_alphas_cumprod, sqrt_alphas_cumprod)        # equivalent noise sigma on image
 
+    noise_model_t = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_level_model)
 
     # --------------------------------
     # load kernel
@@ -180,71 +181,14 @@ def main():
     model = model.to(device)
 
     logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
+    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, step analytic steps:{:.3f}'.format(eta, zeta, lambda_,noise_model_t))
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
 
-    # ----------------------------------------
-    # wrap diffusion model
-    # ----------------------------------------
-
-    def find_nearest(array, value):
-        array = np.asarray(array)
-        idx = (np.abs(array - value)).argmin()
-        return idx
-
-    def model_fn(x, noise_level, vec_t=None, model_out_type=model_output_type, **model_kwargs):
-        # time step corresponding to noise level
-        if not torch.is_tensor(vec_t):
-            t_step = find_nearest(reduced_alpha_cumprod,(noise_level/255.))
-            vec_t = torch.tensor([t_step] * x.shape[0], device=x.device)
-            # timesteps = torch.linspace(1, 1e-3, num_train_timesteps, device=device)
-            # t = timesteps[t_step]
-        if not ddim_sample:
-            out = diffusion.p_sample(
-                model,
-                x,
-                vec_t,
-                clip_denoised=True,
-                denoised_fn=None,
-                cond_fn=None,
-                model_kwargs=model_kwargs,
-            )
-        else:
-            out = diffusion.ddim_sample(
-                model,
-                x,
-                vec_t,
-                clip_denoised=True,
-                denoised_fn=None,
-                cond_fn=None,
-                model_kwargs=model_kwargs,
-                eta=0,
-            )
-
-        if model_out_type == 'pred_x_prev_and_start':
-            return out["sample"], out["pred_xstart"]
-        elif model_out_type == 'pred_x_prev':
-            out = out["sample"]
-        elif model_out_type == 'pred_xstart':
-            out = out["pred_xstart"]
-        elif model_out_type == 'epsilon':
-            alpha_prod_t = alphas_cumprod[int(t_step)]
-            beta_prod_t = 1 - alpha_prod_t
-            out = (x - alpha_prod_t ** (0.5) * out["pred_xstart"]) / beta_prod_t ** (0.5)
-        elif model_out_type == 'score':
-            alpha_prod_t = alphas_cumprod[int(t_step)]
-            beta_prod_t = 1 - alpha_prod_t
-            out = (x - alpha_prod_t ** (0.5) * out["pred_xstart"]) / beta_prod_t ** (0.5)
-            out = - out / beta_prod_t ** (0.5)
-                
-        return out
-
     test_results_ave = OrderedDict()
     test_results_ave['psnr'] = []  # record average PSNR for each kernel
     
-    noise_model_t = find_nearest(reduced_alpha_cumprod, 2 * noise_level_model)
-
     for k_index in range(kernels.shape[1]):
 
         logger.info('-------k:{:>2d} ---------'.format(k_index))
@@ -296,7 +240,7 @@ def main():
 
                 y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
 
-                t_y = find_nearest(reduced_alpha_cumprod,noise_level_img)
+                t_y = utils_model.find_nearest(reduced_alpha_cumprod,noise_level_img)
                 sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
                 x = sqrt_alpha_effective * y + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
                         sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(y)
@@ -328,7 +272,7 @@ def main():
                 for i in range(len(seq)):
                     curr_sigma = sigmas[seq[i]].cpu().numpy()
                     # time step associated with the noise level sigmas[i]
-                    t_i = find_nearest(reduced_alpha_cumprod,curr_sigma)
+                    t_i = utils_model.find_nearest(reduced_alpha_cumprod,curr_sigma)
                     # skip iters
                     if t_i > t_start:
                         continue
@@ -338,8 +282,10 @@ def main():
                         # --------------------------------
 
                         # solve equation 6b with one reverse diffusion step
-                        x0 = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
-                        # x0 = utils_model.test_mode(model_fn, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255)
+                        x0 = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
+                                 model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
+                        # x0 = utils_model.test_mode(utils_model.model_fn, model, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255, \
+                        #   model_out_type=model_out_type, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
 
                         # --------------------------------
                         # step 2, FFT
@@ -356,7 +302,10 @@ def main():
                                         x0 = x0 * 2 - 1
                                     else:
                                         model_out_type = 'pred_x_prev'
-                                        x0 = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
+                                        x0 = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
+                                                model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
+                                        # x0 = utils_model.test_mode(utils_model.model_fn, model, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255, \
+                                        #   model_out_type=model_out_type, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
                                         pass
                             else:
                                 # TODO: first order solver
@@ -367,7 +316,7 @@ def main():
                         if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1] and u == iter_num_U-1):
                             #x = sqrt_alphas_cumprod[t_i] * (x0) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
                             
-                            t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
+                            t_im1 = utils_model.find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
                             # calculate \hat{\eposilon}
                             eps = (x - sqrt_alphas_cumprod[t_i] * x0) / sqrt_1m_alphas_cumprod[t_i]
                             eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
