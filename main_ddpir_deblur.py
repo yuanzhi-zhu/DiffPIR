@@ -83,8 +83,9 @@ def main():
     ddim_sample             = False             # sampling method
     model_output_type       = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
     skip_type               = 'uniform'         # uniform, quad
-    eta                     = 0.2                # eta for ddim sampling
-    
+    eta                     = 1.0               # eta for ddim sampling
+    zeta                    = 1.0               
+
     sf                      = 1
     task_current            = 'deblur'          
     n_channels              = 3                 # fixed
@@ -338,7 +339,7 @@ def main():
 
                         # solve equation 6b with one reverse diffusion step
                         x0 = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
-                        # x = utils_model.test_mode(model_fn, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255)
+                        # x0 = utils_model.test_mode(model_fn, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255)
 
                         # --------------------------------
                         # step 2, FFT
@@ -370,8 +371,8 @@ def main():
                             # calculate \hat{\eposilon}
                             eps = (x - sqrt_alphas_cumprod[t_i] * x0) / sqrt_1m_alphas_cumprod[t_i]
                             eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
-                            x = sqrt_alphas_cumprod[t_im1] * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
-                                        + eta_sigma * torch.randn_like(x)
+                            x = sqrt_alphas_cumprod[t_im1] * x0 + np.sqrt(1-zeta) * (torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
+                                        + eta_sigma * torch.randn_like(x)) + np.sqrt(zeta) * sqrt_1m_alphas_cumprod[t_im1] * torch.randn_like(x)
                         else:
                             x = x0
                             
@@ -435,14 +436,14 @@ def main():
 
                 if save_L:
                     util.imsave(util.single2uint(img_L), os.path.join(E_path, img_name+'_k'+str(k_index)+'_LR.png'))
-
+            return test_results
+        
+        
         # experiments
         lambdas = [0.1*i for i in range(10,15)]
         for lambda_ in lambdas:
-            test_rho(lambda_, model_output_type=model_output_type)
+            test_results = test_rho(lambda_, model_output_type=model_output_type)
 
-        # test with the first kernel
-        break
 
         # --------------------------------
         # Average PSNR

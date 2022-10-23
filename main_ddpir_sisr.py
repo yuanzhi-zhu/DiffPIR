@@ -91,6 +91,7 @@ def main():
     model_output_type       = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
     skip_type               = 'uniform'         # uniform, quad
     eta                     = 1.                # eta for ddim sampling
+    zeta                    = 0.0               
 
     test_sf                 = [4]               # set scale factor, default: [2, 3, 4], [2], [3], [4]
     classical_degradation   = False             # set classical degradation or bicubic degradation
@@ -369,7 +370,7 @@ def main():
 
                             ### solve equation 6b with one reverse diffusion step
                             x0 = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
-                            # x = utils_model.test_mode(model_fn, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255)
+                            # x0 = utils_model.test_mode(model_fn, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255)
 
                             # --------------------------------
                             # step 2, FFT
@@ -400,8 +401,8 @@ def main():
                                 eps = (x - sqrt_alphas_cumprod[t_i] * x0) / sqrt_1m_alphas_cumprod[t_i]
                                 # calculate \hat{\eposilon}
                                 eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
-                                x = sqrt_alphas_cumprod[t_im1] * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
-                                            + eta_sigma * torch.randn_like(x)
+                                x = sqrt_alphas_cumprod[t_im1] * x0 + np.sqrt(1-zeta) * (torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
+                                            + eta_sigma * torch.randn_like(x)) + np.sqrt(zeta) * sqrt_1m_alphas_cumprod[t_im1] * torch.randn_like(x)
                             else:
                                 x = x0
                                 
@@ -476,11 +477,13 @@ def main():
                         psnr_y = util.calculate_psnr(img_E_y, img_H_y, border=border)
                         test_results['psnr_y'].append(psnr_y)
 
+                return test_results
 
-        # experiments
-        lambdas = [1*i for i in range(9,11)]
-        for lambda_ in lambdas:
-            test_rho(lambda_, model_output_type=model_output_type)
+
+            # experiments
+            lambdas = [1*i for i in range(9,11)]
+            for lambda_ in lambdas:
+                test_results = test_rho(lambda_, model_output_type=model_output_type)
 
 
             # --------------------------------

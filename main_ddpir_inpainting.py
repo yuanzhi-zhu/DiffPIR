@@ -77,6 +77,7 @@ def main():
     lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
     eta                     = 1.0                # eta for ddim samplingn  
+    zeta                    = 1.0               
     
     model_out_type          = 'pred_xstart'     # pred_x_prev; pred_xstart; epsilon; score
     generate_mode           = 'DPIR'            # model output type: pred_x_prev; pred_xstart; epsilon; score
@@ -333,8 +334,8 @@ def main():
                         # calculate \hat{\eposilon}
                         eps = (x - sqrt_alphas_cumprod[t_i] * x0) / sqrt_1m_alphas_cumprod[t_i]
                         eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
-                        x = sqrt_alphas_cumprod[t_im1] * x0 + torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
-                                    + eta_sigma * torch.randn_like(x)
+                        x = sqrt_alphas_cumprod[t_im1] * x0 + np.sqrt(1-zeta) * (torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
+                                    + eta_sigma * torch.randn_like(x)) + np.sqrt(zeta) * sqrt_1m_alphas_cumprod[t_im1] * torch.randn_like(x)
                         
                     # set back to x_t from x_{t-1}
                     if u < iter_num_U-1 and seq[i] != seq[-1]:
