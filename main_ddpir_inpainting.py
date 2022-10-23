@@ -6,6 +6,7 @@ import torch
 import numpy as np
 from datetime import datetime
 
+from utils import utils_model
 from utils import utils_logger
 from utils import utils_image as util
 
@@ -172,64 +173,11 @@ def main():
     model = model.to(device)
 
     logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
+    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}'.format(eta, zeta, lambda_))
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
 
-    # ----------------------------------------
-    # wrap diffusion model
-    # ----------------------------------------
-
-    def find_nearest(array, value):
-        array = np.asarray(array)
-        idx = (np.abs(array - value)).argmin()
-        return idx
-
-    def model_fn(x, noise_level, vec_t=None, model_out_type=model_out_type, **model_kwargs):
-        # time step corresponding to noise level
-        if not torch.is_tensor(vec_t):
-            t_step = find_nearest(reduced_alpha_cumprod,(noise_level/255.))
-            vec_t = torch.tensor([t_step] * x.shape[0], device=x.device)
-            # timesteps = torch.linspace(1, 1e-3, num_train_timesteps, device=device)
-            # t = timesteps[t_step]
-        if not ddim_sample:
-            out = diffusion.p_sample(
-                model,
-                x,
-                vec_t,
-                clip_denoised=True,
-                denoised_fn=None,
-                cond_fn=None,
-                model_kwargs=model_kwargs,
-            )
-        else:
-            out = diffusion.ddim_sample(
-                model,
-                x,
-                vec_t,
-                clip_denoised=True,
-                denoised_fn=None,
-                cond_fn=None,
-                model_kwargs=model_kwargs,
-                eta=0,
-            )
-        if model_out_type == 'pred_x_prev_and_start':
-            return out["sample"], out["pred_xstart"]
-        elif model_out_type == 'pred_x_prev':
-            out = out["sample"]
-        elif model_out_type == 'pred_xstart':
-            out = out["pred_xstart"]
-        elif model_out_type == 'epsilon':
-            alpha_prod_t = alphas_cumprod[int(t_step)]
-            beta_prod_t = 1 - alpha_prod_t
-            out = (x - alpha_prod_t ** (0.5) * out["pred_xstart"]) / beta_prod_t ** (0.5)
-        elif model_out_type == 'score':
-            alpha_prod_t = alphas_cumprod[int(t_step)]
-            beta_prod_t = 1 - alpha_prod_t
-            out = (x - alpha_prod_t ** (0.5) * out["pred_xstart"]) / beta_prod_t ** (0.5)
-            out = - out / beta_prod_t ** (0.5)
-                
-        return out
 
     def test_rho(lambda_=lambda_):
         for idx, img in enumerate(L_paths):
@@ -291,7 +239,7 @@ def main():
             for i in range(len(seq)):
                 curr_sigma = sigmas[seq[i]].cpu().numpy()
                 # time step associated with the noise level sigmas[i]
-                t_i = find_nearest(reduced_alpha_cumprod,curr_sigma)
+                t_i = utils_model.find_nearest(reduced_alpha_cumprod,curr_sigma)
                 #vec_t = torch.tensor([999-i] * x.shape[0], device=device)
 
                 for u in range(iter_num_U):
@@ -306,9 +254,11 @@ def main():
 
                     # solve equation 6b with one reverse diffusion step
                     if model_out_type == 'pred_xstart':
-                        x0 = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
+                        x0 = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
+                                model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
                     else:
-                        x = model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type)
+                        x = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
+                                model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
                     # x = utils_model.test_mode(model_fn, x, mode=0, refield=32, min_size=256, modulo=16, noise_level=sigmas[i].cpu().numpy()*255)
                     # --------------------------------
                     # step 2, closed-form solution
@@ -330,7 +280,7 @@ def main():
                     if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1]):
                         # x = sqrt_alphas_cumprod[t_i] * (x) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x) # x = sqrt_alphas_cumprod[t_i] * (x) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
                         
-                        t_im1 = find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
+                        t_im1 = utils_model.find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
                         # calculate \hat{\eposilon}
                         eps = (x - sqrt_alphas_cumprod[t_i] * x0) / sqrt_1m_alphas_cumprod[t_i]
                         eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
