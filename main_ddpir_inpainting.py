@@ -64,8 +64,10 @@ def main():
     model_name              = 'diffusion_celeba256_250000'  # diffusion_celeba256_250000, diffusion_ffhq_10m set diffusino model
     testset_name            = 'gts/face'        # set testing set,  'set18' | 'set24'
     mask_name               = 'gt_keep_masks/face/000000.png'
+    num_train_timesteps     = 1000
     iter_num                = 1000              # set number of iterations, default: 40 for demosaicing
     iter_num_U              = 1                 # set number of inner iterations, default: 1
+    skip                    = num_train_timesteps//iter_num     # skip interval
 
     show_img                = False             # default: False
     save_L                  = False             # save LR image
@@ -74,14 +76,14 @@ def main():
     save_progressive        = True              # save generation process
     save_progressive_mask   = False             # save generation process
 
-    sigma                   = max(0.01,noise_level_img)  # noise level associated with condition y
+    sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
     lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
     eta                     = 1.0                # eta for ddim samplingn  
     zeta                    = 1.0               
     
     model_out_type          = 'pred_xstart'     # pred_x_prev; pred_xstart; epsilon; score
-    generate_mode           = 'DPIR'            # model output type: pred_x_prev; pred_xstart; epsilon; score
+    generate_mode           = 'DDPIR'            # model output type: pred_x_prev; pred_xstart; epsilon; score
     skip_type               = 'uniform'         # uniform, quad
     ddim_sample             = False             # sampling method
     
@@ -100,7 +102,6 @@ def main():
     # noise schedule 
     beta_start              = 0.002 / 1000
     beta_end                = 20 / 1000
-    num_train_timesteps     = 1000
     betas                   = np.linspace(beta_start, beta_end, num_train_timesteps, dtype=np.float32)
     betas                   = torch.from_numpy(betas).to(device)
     alphas                  = 1.0 - betas
@@ -108,6 +109,13 @@ def main():
     sqrt_alphas_cumprod     = torch.sqrt(alphas_cumprod)
     sqrt_1m_alphas_cumprod  = torch.sqrt(1. - alphas_cumprod)
     reduced_alpha_cumprod   = torch.div(sqrt_1m_alphas_cumprod, sqrt_alphas_cumprod)        # equivalent noise sigma on image
+
+    noise_model_t           = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_level_model)
+    noise_model_t           = 0
+
+    noise_inti_img          = 50 / 255
+    t_start                 = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_inti_img) # start timestep of the diffusion process
+    t_start                 = 999   
 
     # ----------------------------------------
     # L_path, E_path, H_path, mask_path
@@ -173,7 +181,8 @@ def main():
     model = model.to(device)
 
     logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
-    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}'.format(eta, zeta, lambda_))
+    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, stepstep analytic steps:{:.3f}'.format(eta, zeta, lambda_, noise_model_t))
+    logger.info('start step:{:.3f}, skip_type:{}, skip interval:{:.3f}'.format(t_start, skip_type, skip))
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
@@ -202,7 +211,8 @@ def main():
 
             mask = util.single2tensor4(mask.astype(np.float32)).to(device) 
 
-            x = torch.randn_like(y)        
+            # x = torch.randn_like(y)     
+            x = sqrt_alphas_cumprod[t_start] * y + sqrt_1m_alphas_cumprod[t_start] * torch.randn_like(y)   
 
             # --------------------------------
             # (3) get rhos and sigmas
@@ -224,7 +234,6 @@ def main():
 
             progress_img = []
             # create sequence of timestep for sampling
-            skip = num_train_timesteps//iter_num
             if skip_type == 'uniform':
                 seq = [i*skip for i in range(iter_num)]
                 if skip > 1:
@@ -241,7 +250,9 @@ def main():
                 # time step associated with the noise level sigmas[i]
                 t_i = utils_model.find_nearest(reduced_alpha_cumprod,curr_sigma)
                 #vec_t = torch.tensor([999-i] * x.shape[0], device=device)
-
+                # skip iters
+                if t_i > t_start:
+                    continue
                 for u in range(iter_num_U):
                     # --------------------------------
                     # step 1, reverse diffsuion step
@@ -254,10 +265,10 @@ def main():
 
                     # solve equation 6b with one reverse diffusion step
                     if model_out_type == 'pred_xstart':
-                        x0 = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
+                        x0 = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type=model_out_type, \
                                 model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
                     else:
-                        x = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
+                        x = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type=model_out_type, \
                                 model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
                     # x = utils_model.test_mode(model_fn, x, mode=0, refield=32, min_size=256, modulo=16, noise_level=sigmas[i].cpu().numpy()*255)
                     # --------------------------------
@@ -265,13 +276,22 @@ def main():
                     # --------------------------------
 
                     # analytic solution to equation 6a
-                    if generate_mode == 'DPIR': 
+                    if generate_mode == 'DDPIR': 
                         # solve sub-problem
                         if sub_1_analytic:
                             if model_out_type == 'pred_xstart':
-                                x0 = (mask*y + rhos[t_i].float()*x0).div(mask+rhos[t_i])
+                                # when noise level less than given image noise, skip
+                                if i < num_train_timesteps-noise_model_t:    
+                                    x0 = (mask*y + rhos[t_i].float()*x0).div(mask+rhos[t_i])
+                                else:
+                                    pass
+                                
                             else:
-                                x = (mask*y + rhos[t_i].float()*x).div(mask+rhos[t_i])
+                                # when noise level less than given image noise, skip
+                                if i < num_train_timesteps-noise_model_t:    
+                                    x = (mask*y + rhos[t_i].float()*x).div(mask+rhos[t_i])
+                                else:
+                                    pass
                         else:
                             # TODO: first order solver
                             # x = x - 1 / (2*rhos[t_i]) * (x - y_t) * mask 
@@ -304,7 +324,7 @@ def main():
                         util.imshow(x_show)
 
             # recover conditional part
-            if generate_mode in ['repaint','DPIR']:
+            if generate_mode in ['repaint','DDPIR']:
                 x[mask.to(torch.bool)] = y[mask.to(torch.bool)]
 
             # --------------------------------
@@ -325,7 +345,7 @@ def main():
             if save_progressive:
                 now = datetime.now()
                 current_time = now.strftime("%Y_%m_%d_%H_%M_%S")
-                if generate_mode in ['repaint','DPIR']:
+                if generate_mode in ['repaint','DDPIR']:
                     mask = np.squeeze(mask.cpu().numpy())
                     if mask.ndim == 3:
                         mask = np.transpose(mask, (1, 2, 0))
@@ -337,7 +357,7 @@ def main():
                 y_t = np.squeeze((y/2+0.5).cpu().numpy())
                 if y_t.ndim == 3:
                     y_t = np.transpose(y_t, (1, 2, 0))
-                if generate_mode in ['repaint','DPIR']:
+                if generate_mode in ['repaint','DDPIR']:
                     for x in progress_img:
                         images.append((y_t)* mask+ (1-mask) * x)
                     img_total = cv2.hconcat(images)
@@ -345,6 +365,8 @@ def main():
                         util.imshow(img_total,figsize=(80,4))
                     if save_progressive_mask:
                         util.imsave(img_total*255., os.path.join(E_path, img_name+f'_process_mask_lambda_k_{lambda_}_{current_time}.png'))
+
+            logger.info('inpainting complete!')
 
             # test with the first image in the path
             break

@@ -70,8 +70,10 @@ def main():
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
     model_name              = 'diffusion_ffhq_10m'  # set diffusino model
     testset_name            = 'set5'            # set testing set,  'set18' | 'set24'
+    num_train_timesteps     = 1000
     iter_num                = 1000              # set number of sampling iterations, default: 1000 for demosaicing
     iter_num_U              = 1                 # set number of inner iterations, default: 1
+    skip                    = num_train_timesteps//iter_num     # skip interval
 
     show_img                = False             # default: False
     save_L                  = True              # save LR image
@@ -80,12 +82,10 @@ def main():
     save_progressive        = True              # save generation process
     border                  = 0
 
-    sigma                   = max(0.01,noise_level_img)  # noise level associated with condition y
+    sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
     lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
-    
-    t_start                 = 999               # start timestep of the diffusion process
-    
+
     log_process             = False
     ddim_sample             = False             # sampling method
     model_output_type       = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
@@ -110,7 +110,6 @@ def main():
     # noise schedule 
     beta_start              = 0.002 / 1000
     beta_end                = 20 / 1000
-    num_train_timesteps     = 1000
     betas                   = np.linspace(beta_start, beta_end, num_train_timesteps, dtype=np.float32)
     betas                   = torch.from_numpy(betas).to(device)
     alphas                  = 1.0 - betas
@@ -119,7 +118,12 @@ def main():
     sqrt_1m_alphas_cumprod  = torch.sqrt(1. - alphas_cumprod)
     reduced_alpha_cumprod   = torch.div(sqrt_1m_alphas_cumprod, sqrt_alphas_cumprod)        # equivalent noise sigma on image
 
-    noise_model_t = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_level_model)
+    noise_model_t           = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_level_model)
+    #noise_model_t           = 0
+
+    noise_inti_img          = 50 / 255
+    t_start                 = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_inti_img) # start timestep of the diffusion process
+    t_start                 = num_train_timesteps - 1   
 
     # ----------------------------------------
     # L_path, E_path, H_path
@@ -184,7 +188,8 @@ def main():
     model = model.to(device)
 
     logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
-    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, step analytic steps:{:.3f}'.format(eta, zeta, lambda_,noise_model_t))
+    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, stepstep analytic steps:{:.3f}'.format(eta, zeta, lambda_, noise_model_t))
+    logger.info('start step:{:.3f}, skip_type:{}, skip interval:{:.3f}'.format(t_start, skip_type, skip))
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
