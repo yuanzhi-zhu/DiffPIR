@@ -6,13 +6,16 @@ import numpy as np
 from datetime import datetime
 from collections import OrderedDict
 import hdf5storage
+from functools import partial
 
 import torch
+from torch.nn import functional as F
 
 from utils import utils_model
 from utils import utils_logger
 from utils import utils_sisr as sr
 from utils import utils_image as util
+from utils.utils_resizer import Resizer
 
 from guided_diffusion import dist_util
 from guided_diffusion.script_util import (
@@ -74,6 +77,7 @@ def main():
     iter_num                = 1000              # set number of sampling iterations, default: 1000 for demosaicing
     iter_num_U              = 1                 # set number of inner iterations, default: 1
     skip                    = num_train_timesteps//iter_num     # skip interval
+    sr_mode                 = 'blur'            # 'blur', 'cubic' mode of sr up/down sampling
 
     show_img                = False             # default: False
     save_L                  = True              # save LR image
@@ -94,6 +98,8 @@ def main():
     zeta                    = 0.0               
 
     test_sf                 = [4]               # set scale factor, default: [2, 3, 4], [2], [3], [4]
+    inIter                  = 5                 # iter num for sr solution
+    gamma                   = 1.75              # coef for iterative sr solver
     classical_degradation   = False             # set classical degradation or bicubic degradation
     task_current            = 'sr'              # 'sr' for super resolution
     n_channels              = 3                 # fixed
@@ -188,8 +194,8 @@ def main():
     model = model.to(device)
 
     logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
-    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, stepstep analytic steps:{:.3f}'.format(eta, zeta, lambda_, noise_model_t))
-    logger.info('start step:{:.3f}, skip_type:{}, skip interval:{:.3f}'.format(t_start, skip_type, skip))
+    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, skipstep analytic steps:{}'.format(eta, zeta, lambda_, noise_model_t))
+    logger.info('start step:{}, skip_type:{}, skip interval:{}'.format(t_start, skip_type, skip))
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
@@ -236,12 +242,26 @@ def main():
                     img_H = util.imread_uint(img, n_channels=n_channels)
                     img_H = util.modcrop(img_H, sf)  # modcrop
 
-                    if classical_degradation:
-                        img_L = sr.classical_degradation(img_H, k, sf)
-                        util.imshow(img_L) if show_img else None
-                        img_L = util.uint2single(img_L)
-                    else:
-                        img_L = util.imresize_np(util.uint2single(img_H), 1/sf)
+                    if sr_mode == 'blur':
+                        if classical_degradation:
+                            img_L = sr.classical_degradation(img_H, k, sf)
+                            util.imshow(img_L) if show_img else None
+                            img_L = util.uint2single(img_L)
+                        else:
+                            img_L = util.imresize_np(util.uint2single(img_H), 1/sf)
+                    elif sr_mode == 'cubic':
+                        img_H_tensor = np.transpose(img_H, (2, 0, 1))
+                        img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(device)
+                        img_H_tensor = img_H_tensor / 255
+                        # set up resizers
+                        up_sample = partial(F.interpolate, scale_factor=sf)
+                        down_sample = Resizer(img_H_tensor.shape, 1/sf).to(device)
+                        img_L = down_sample(img_H_tensor)
+                        img_L = img_L.cpu().numpy()       #[0,1]
+                        img_L = np.squeeze(img_L)
+                        if img_L.ndim == 3:
+                            img_L = np.transpose(img_L, (1, 2, 0))
+
 
                     np.random.seed(seed=0)  # for reproducibility
                     img_L = img_L * 2 - 1
@@ -331,12 +351,17 @@ def main():
                             if seq[i] != seq[-1]:
                                 if sub_1_analytic:
                                     if model_out_type == 'pred_xstart':
-                                        tau = rhos[t_i].float().repeat(1, 1, 1, 1)
                                         # when noise level less than given image noise, skip
-                                        if i < num_train_timesteps-noise_model_t:    
-                                            x0 = x0 / 2 + 0.5
-                                            x0 = sr.data_solution(x0.float(), FB, FBC, F2B, FBFy, tau, sf)
-                                            x0 = x0 * 2 - 1
+                                        if i < num_train_timesteps-noise_model_t: 
+                                            if sr_mode == 'blur':
+                                                tau = rhos[t_i].float().repeat(1, 1, 1, 1)
+                                                x0 = x0 / 2 + 0.5
+                                                x0 = sr.data_solution(x0.float(), FB, FBC, F2B, FBFy, tau, sf)
+                                                x0 = x0 * 2 - 1
+                                            elif sr_mode == 'cubic': 
+                                                # iterative back-projection (IBP) solution
+                                                for _ in range(inIter):
+                                                    x0 = x0 + gamma * up_sample((y - down_sample(x0)))
                                         else:
                                             model_out_type = 'pred_x_prev'
                                             x0 = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
@@ -436,7 +461,7 @@ def main():
 
 
             # experiments
-            lambdas = [1*i for i in range(9,11)]
+            lambdas = [1*i for i in range(9,10)]
             for lambda_ in lambdas:
                 test_results = test_rho(lambda_, model_output_type=model_output_type)
 

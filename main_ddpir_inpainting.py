@@ -82,8 +82,8 @@ def main():
     eta                     = 1.0                # eta for ddim samplingn  
     zeta                    = 1.0               
     
-    model_out_type          = 'pred_xstart'     # pred_x_prev; pred_xstart; epsilon; score
-    generate_mode           = 'DDPIR'            # model output type: pred_x_prev; pred_xstart; epsilon; score
+    model_out_type          = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
+    generate_mode           = 'DDPIR'           # repaint; vanilla; DDPIR
     skip_type               = 'uniform'         # uniform, quad
     ddim_sample             = False             # sampling method
     
@@ -181,8 +181,8 @@ def main():
     model = model.to(device)
 
     logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
-    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, stepstep analytic steps:{:.3f}'.format(eta, zeta, lambda_, noise_model_t))
-    logger.info('start step:{:.3f}, skip_type:{}, skip interval:{:.3f}'.format(t_start, skip_type, skip))
+    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, skipstep analytic steps:{}'.format(eta, zeta, lambda_, noise_model_t))
+    logger.info('start step:{}, skip_type:{}, skip interval:{}'.format(t_start, skip_type, skip))
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
