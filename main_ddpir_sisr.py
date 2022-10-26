@@ -74,10 +74,10 @@ def main():
     model_name              = 'diffusion_ffhq_10m'  # set diffusino model
     testset_name            = 'set5'            # set testing set,  'set18' | 'set24'
     num_train_timesteps     = 1000
-    iter_num                = 1000              # set number of sampling iterations, default: 1000 for demosaicing
+    iter_num                = 20              # set number of sampling iterations, default: 1000 for demosaicing
     iter_num_U              = 1                 # set number of inner iterations, default: 1
     skip                    = num_train_timesteps//iter_num     # skip interval
-    sr_mode                 = 'blur'            # 'blur', 'cubic' mode of sr up/down sampling
+    sr_mode                 = 'cubic'            # 'blur', 'cubic' mode of sr up/down sampling
 
     show_img                = False             # default: False
     save_L                  = True              # save LR image
@@ -93,13 +93,13 @@ def main():
     log_process             = False
     ddim_sample             = False             # sampling method
     model_output_type       = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
-    skip_type               = 'uniform'         # uniform, quad
+    skip_type               = 'quad'         # uniform, quad
     eta                     = 1.                # eta for ddim sampling
-    zeta                    = 0.0               
+    zeta                    = 1.0               
 
     test_sf                 = [4]               # set scale factor, default: [2, 3, 4], [2], [3], [4]
-    inIter                  = 5                 # iter num for sr solution
-    gamma                   = 1.75              # coef for iterative sr solver
+    inIter                  = 4                 # iter num for sr solution: 4-6
+    gamma                   = 8/100             # coef for iterative sr solver 20steps: 0.05-0.10 for zeta=1, 0.09-0.13 for zeta=0 
     classical_degradation   = False             # set classical degradation or bicubic degradation
     task_current            = 'sr'              # 'sr' for super resolution
     n_channels              = 3                 # fixed
@@ -107,12 +107,13 @@ def main():
     model_zoo               = os.path.join(cwd, 'model_zoo')    # fixed
     testsets                = os.path.join(cwd, 'testsets')     # fixed
     results                 = os.path.join(cwd, 'results')      # fixed
-    result_name             = testset_name + '_' + task_current + '_' + model_name
+    result_name             = f'{testset_name}_{task_current}_{sr_mode}{str(test_sf)}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_zeta{zeta}_lambda{lambda_}'
     model_path              = os.path.join(model_zoo, model_name+'.pt')
     device                  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
 
-    
+    calc_LPIPS              = True
+
     # noise schedule 
     beta_start              = 0.002 / 1000
     beta_end                = 20 / 1000
@@ -125,7 +126,7 @@ def main():
     reduced_alpha_cumprod   = torch.div(sqrt_1m_alphas_cumprod, sqrt_alphas_cumprod)        # equivalent noise sigma on image
 
     noise_model_t           = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_level_model)
-    #noise_model_t           = 0
+    noise_model_t           = 0
 
     noise_inti_img          = 50 / 255
     t_start                 = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_inti_img) # start timestep of the diffusion process
@@ -193,7 +194,7 @@ def main():
         v.requires_grad = False
     model = model.to(device)
 
-    logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
+    logger.info('model_name:{}, sr_mode:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, sr_mode, noise_level_img, noise_level_model))
     logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, skipstep analytic steps:{}'.format(eta, zeta, lambda_, noise_model_t))
     logger.info('start step:{}, skip_type:{}, skip interval:{}'.format(t_start, skip_type, skip))
     logger.info('Model path: {:s}'.format(model_path))
@@ -213,6 +214,8 @@ def main():
     test_results_ave = OrderedDict()
     test_results_ave['psnr_sf_k'] = []
     test_results_ave['psnr_y_sf_k'] = []
+    if calc_LPIPS:
+        test_results_ave['lpips'] = []
 
     for sf in test_sf:
         border = sf
@@ -223,6 +226,10 @@ def main():
             test_results = OrderedDict()
             test_results['psnr'] = []
             test_results['psnr_y'] = []
+            if calc_LPIPS:
+                import lpips
+                loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
+                test_results['lpips'] = []
 
             if not classical_degradation:  # for bicubic degradation
                 k_index = sf-2
@@ -296,7 +303,7 @@ def main():
 
                     y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
 
-                    t_y = utils_model.find_nearest(reduced_alpha_cumprod,noise_level_img)
+                    t_y = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_level_img)
                     sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
                     x = sqrt_alpha_effective * x + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
                             sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(x)
@@ -321,8 +328,9 @@ def main():
                         seq = np.sqrt(np.linspace(0, num_train_timesteps**2, iter_num))
                         seq = [int(s) for s in list(seq)]
                         seq[-1] = seq[-1] - 1
-                    progress_seq = seq[::(len(seq)//10)]
-                    progress_seq.append(seq[-1])
+                    progress_seq = seq[::max(len(seq)//10,1)]
+                    if progress_seq[-1] != seq[-1]:
+                        progress_seq.append(seq[-1])
                     
                     # reverse diffusion for one image from random noise
                     for i in range(len(seq)):
@@ -340,9 +348,9 @@ def main():
 
                             ### solve equation 6b with one reverse diffusion step
                             x0 = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
-                                    model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
+                                    model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
                             # x0 = utils_model.test_mode(utils_model.model_fn, model, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255, \
-                            #       model_out_type=model_out_type, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
+                            #       model_out_type=model_out_type, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
 
                             # --------------------------------
                             # step 2, FFT
@@ -361,13 +369,15 @@ def main():
                                             elif sr_mode == 'cubic': 
                                                 # iterative back-projection (IBP) solution
                                                 for _ in range(inIter):
-                                                    x0 = x0 + gamma * up_sample((y - down_sample(x0)))
+                                                    x0 = x0 / 2 + 0.5
+                                                    x0 = x0 + gamma * up_sample((y - down_sample(x0))) # / (1+rhos[t_i])
+                                                    x0 = x0 * 2 - 1
                                         else:
                                             model_out_type = 'pred_x_prev'
                                             x0 = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
-                                                    model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
+                                                    model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
                                             # x0 = utils_model.test_mode(utils_model.model_fn, model, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255, \
-                                            #       model_out_type=model_out_type, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
+                                            #       model_out_type=model_out_type, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
                                             pass
                                 else:
                                     # TODO: first order solver
@@ -392,8 +402,8 @@ def main():
                                     
 
                         # save the process
+                        x_0 = (x/2+0.5)
                         if save_progressive and (seq[i] in progress_seq):
-                            x_0 = (x/2+0.5)
                             x_show = x_0.clone().detach().cpu().numpy()       #[0,1]
                             x_show = np.squeeze(x_show)
                             if x_show.ndim == 3:
@@ -410,6 +420,13 @@ def main():
                     # --------------------------------
 
                     img_E = util.tensor2uint(x_0)
+                    
+                    if calc_LPIPS:
+                        img_H_tensor = np.transpose(img_H, (2, 0, 1))
+                        img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(device)
+                        img_H_tensor = img_H_tensor / 255 * 2 -1
+                        lpips_score = loss_fn_vgg(x_0.detach()*2-1, img_H_tensor)
+                        test_results['lpips'].append(lpips_score.cpu().detach().numpy()[0][0][0][0])
 
                     psnr = util.calculate_psnr(img_E, img_H, border=border)
                     test_results['psnr'].append(psnr)
@@ -427,7 +444,7 @@ def main():
                         img_total = cv2.hconcat(progress_img)
                         if show_img:
                             util.imshow(img_total,figsize=(80,4))
-                        util.imsave(img_total*255., os.path.join(E_path, img_name+f'_sigma_{noise_level_img}_process_lambda_{lambda_}_{current_time}_psnr_{psnr}.png'))
+                        util.imsave(img_total*255., os.path.join(E_path, img_name+'_sigma_{:.3f}_process_lambda_{:.3f}_{}_psnr_{:.4f}.png'.format(noise_level_img,lambda_,current_time,psnr)))
                         
                     # --------------------------------
                     # (4) img_LEH
@@ -456,12 +473,12 @@ def main():
                         img_H_y = util.rgb2ycbcr(img_H, only_y=True)
                         psnr_y = util.calculate_psnr(img_E_y, img_H_y, border=border)
                         test_results['psnr_y'].append(psnr_y)
-
+                        
                 return test_results
 
 
             # experiments
-            lambdas = [1*i for i in range(9,10)]
+            lambdas = [lambda_*i for i in range(1,2)]
             for lambda_ in lambdas:
                 test_results = test_rho(lambda_, model_output_type=model_output_type)
 
@@ -471,23 +488,31 @@ def main():
             # --------------------------------
 
             ave_psnr_k = sum(test_results['psnr']) / len(test_results['psnr'])
-            logger.info('------> Average PSNR(RGB) of ({}) scale factor: ({}), kernel: ({}) sigma: ({:.2f}): {:.2f} dB'.format(testset_name, sf, k_index, noise_level_model, ave_psnr_k))
+            logger.info('------> Average PSNR(RGB) of ({}) scale factor: ({}), kernel: ({}) sigma: ({:.3f}): {:.4f} dB'.format(testset_name, sf, k_index, noise_level_model, ave_psnr_k))
             test_results_ave['psnr_sf_k'].append(ave_psnr_k)
 
             if n_channels == 3:  # RGB image
                 ave_psnr_y_k = sum(test_results['psnr_y']) / len(test_results['psnr_y'])
-                logger.info('------> Average PSNR(Y) of ({}) scale factor: ({}), kernel: ({}) sigma: ({:.2f}): {:.2f} dB'.format(testset_name, sf, k_index, noise_level_model, ave_psnr_y_k))
+                logger.info('------> Average PSNR(Y) of ({}) scale factor: ({}), kernel: ({}) sigma: ({:.3f}): {:.4f} dB'.format(testset_name, sf, k_index, noise_level_model, ave_psnr_y_k))
                 test_results_ave['psnr_y_sf_k'].append(ave_psnr_y_k)
+
+            if calc_LPIPS:
+                ave_lpips_k = sum(test_results['lpips']) / len(test_results['lpips'])
+                logger.info('------> Average LPIPS of ({}) scale factor: ({}), kernel: ({}) sigma: ({:.3f}): {:.4f}'.format(testset_name, sf, k_index, noise_level_model, ave_lpips_k))
+                test_results_ave['lpips'].append(ave_lpips_k)
 
     # ---------------------------------------
     # Average PSNR for all sf and kernels
     # ---------------------------------------
 
     ave_psnr_sf_k = sum(test_results_ave['psnr_sf_k']) / len(test_results_ave['psnr_sf_k'])
-    logger.info('------> Average PSNR of ({}) {:.2f} dB'.format(testset_name, ave_psnr_sf_k))
+    logger.info('------> Average PSNR of ({}) {:.4f} dB'.format(testset_name, ave_psnr_sf_k))
     if n_channels == 3:
         ave_psnr_y_sf_k = sum(test_results_ave['psnr_y_sf_k']) / len(test_results_ave['psnr_y_sf_k'])
-        logger.info('------> Average PSNR of ({}) {:.2f} dB'.format(testset_name, ave_psnr_y_sf_k))
+        logger.info('------> Average PSNR of ({}) {:.4f} dB'.format(testset_name, ave_psnr_y_sf_k))
+    if calc_LPIPS:
+        ave_lpips_sf_k = sum(test_results_ave['lpips']) / len(test_results_ave['lpips'])
+        logger.info('------> Average LPIPS of ({}) {:.4f}'.format(testset_name, ave_lpips_sf_k))
 
 if __name__ == '__main__':
 

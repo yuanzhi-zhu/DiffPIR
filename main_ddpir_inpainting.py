@@ -5,6 +5,7 @@ import cv2
 import torch
 import numpy as np
 from datetime import datetime
+from collections import OrderedDict
 
 from utils import utils_model
 from utils import utils_logger
@@ -94,10 +95,12 @@ def main():
     model_zoo               = os.path.join(cwd, 'model_zoo')    # fixed
     testsets                = os.path.join(cwd, 'testsets')     # fixed
     results                 = os.path.join(cwd, 'results')      # fixed
-    result_name             = testset_name + '_' + task_current + '_' + model_name
+    result_name             = f'{testset_name}_{task_current}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_zeta{zeta}'
     model_path              = os.path.join(model_zoo, model_name+'.pt')
     device                  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
+
+    calc_LPIPS              = False
     
     # noise schedule 
     beta_start              = 0.002 / 1000
@@ -187,6 +190,11 @@ def main():
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
 
+    test_results = OrderedDict()
+    if calc_LPIPS:
+        import lpips
+        loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
+        test_results['lpips'] = []
 
     def test_rho(lambda_=lambda_):
         for idx, img in enumerate(L_paths):
@@ -211,7 +219,7 @@ def main():
 
             mask = util.single2tensor4(mask.astype(np.float32)).to(device) 
 
-            # x = torch.randn_like(y)     
+            # x = torch.randn_like(y)
             x = sqrt_alphas_cumprod[t_start] * y + sqrt_1m_alphas_cumprod[t_start] * torch.randn_like(y)   
 
             # --------------------------------
@@ -222,8 +230,11 @@ def main():
             sigma_ks = []
             rhos = []
             for i in range(num_train_timesteps):
-                sigmas.append(reduced_alpha_cumprod[999-i])
-                sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
+                sigmas.append(reduced_alpha_cumprod[num_train_timesteps-1-i])
+                if model_out_type == 'pred_xstart':
+                    sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
+                elif model_out_type == 'pred_x_prev':
+                    sigma_ks.append(torch.sqrt(betas[i]/alphas[i]))
                 rhos.append(lambda_*(sigma**2)/(sigma_ks[i]**2))
                      
             rhos, sigmas, sigma_ks = torch.tensor(rhos).to(device), torch.tensor(sigmas).to(device), torch.tensor(sigma_ks).to(device)
@@ -266,10 +277,10 @@ def main():
                     # solve equation 6b with one reverse diffusion step
                     if model_out_type == 'pred_xstart':
                         x0 = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type=model_out_type, \
-                                model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
+                                model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
                     else:
                         x = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type=model_out_type, \
-                                model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
+                                model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
                     # x = utils_model.test_mode(model_fn, x, mode=0, refield=32, min_size=256, modulo=16, noise_level=sigmas[i].cpu().numpy()*255)
                     # --------------------------------
                     # step 2, closed-form solution
@@ -312,8 +323,9 @@ def main():
                         x = torch.sqrt(alphas[t_i]) * x + torch.sqrt(betas[t_i]) * torch.randn_like(x)
 
                 # save the process
+                x_0 = (x/2+0.5)
                 if save_progressive and (seq[i] in progress_seq):
-                    x_show = (x/2+0.5).clone().detach().cpu().numpy()       #[0,1]
+                    x_show = x_0.clone().detach().cpu().numpy()       #[0,1]
                     x_show = np.squeeze(x_show)
                     if x_show.ndim == 3:
                         x_show = np.transpose(x_show, (1, 2, 0))
@@ -332,6 +344,13 @@ def main():
             # --------------------------------
             
             img_E = util.tensor2uint(x)
+                    
+            if calc_LPIPS:
+                img_H_tensor = np.transpose(img_H, (2, 0, 1))
+                img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(device)
+                img_H_tensor = img_H_tensor / 255 * 2 -1
+                lpips_score = loss_fn_vgg(x_0.detach()*2-1, img_H_tensor)
+                test_results['lpips'].append(lpips_score.cpu().detach().numpy()[0][0][0][0])
 
             if save_E:
                 util.imsave(img_E, os.path.join(E_path, img_name+'_'+model_name+'.png'))
@@ -352,7 +371,7 @@ def main():
                 img_total = cv2.hconcat(progress_img)
                 if show_img:
                     util.imshow(img_total,figsize=(80,4))
-                util.imsave(img_total*255., os.path.join(E_path, img_name+f'_process_lambda_{lambda_}_{current_time}.png'))
+                util.imsave(img_total*255., os.path.join(E_path, img_name+'_process_lambda_{:.3f}_{}.png'.format(lambda_,current_time)))
                 images = []
                 y_t = np.squeeze((y/2+0.5).cpu().numpy())
                 if y_t.ndim == 3:
@@ -364,8 +383,7 @@ def main():
                     if show_img:
                         util.imshow(img_total,figsize=(80,4))
                     if save_progressive_mask:
-                        util.imsave(img_total*255., os.path.join(E_path, img_name+f'_process_mask_lambda_k_{lambda_}_{current_time}.png'))
-
+                        util.imsave(img_total*255., os.path.join(E_path, img_name+'_process_mask_lambda_{:.3f}_{}.png'.format(lambda_,current_time)))
             logger.info('inpainting complete!')
 
             # test with the first image in the path
@@ -373,9 +391,17 @@ def main():
 
 
     # experiments
-    lambdas = [0.1*i for i in range(10,30)]
+    lambdas = [lambda_*i for i in range(1,2)]
     for lambda_ in lambdas:
         test_rho(lambda_)
+
+    # --------------------------------
+    # Average LPIPS
+    # --------------------------------
+
+    if calc_LPIPS:
+        ave_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
+        logger.info('------> Average LPIPS of ({}), sigma: ({:.2f}): {:.2f}'.format(testset_name, noise_level_model, ave_lpips))
 
 
 if __name__ == '__main__':

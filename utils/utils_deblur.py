@@ -3,6 +3,8 @@ import numpy as np
 import scipy
 from scipy import fftpack
 import torch
+from torch import nn
+from motionblur.motionblur import Kernel
 
 from math import cos, sin
 from numpy import zeros, ones, prod, array, pi, log, min, mod, arange, sum, mgrid, exp, pad, round
@@ -628,6 +630,101 @@ def rot3D(x, r):
     R = Rz @ Ry @ Rx
     x = R @ x
     return x
+    
+    
+'''
+BLur kernel: Gaussian and Motion
+from https://github.com/DPS2022/diffusion-posterior-sampling
+'''
+
+
+class Blurkernel(nn.Module):
+    def __init__(self, blur_type='gaussian', kernel_size=31, std=3.0, device=None):
+        super().__init__()
+        self.blur_type = blur_type
+        self.kernel_size = kernel_size
+        self.std = std
+        self.device = device
+        self.seq = nn.Sequential(
+            nn.ReflectionPad2d(self.kernel_size//2),
+            nn.Conv2d(3, 3, self.kernel_size, stride=1, padding=0, bias=False, groups=3)
+        )
+
+        self.weights_init()
+
+    def forward(self, x):
+        return self.seq(x)
+
+    def weights_init(self):
+        if self.blur_type == "gaussian":
+            n = np.zeros((self.kernel_size, self.kernel_size))
+            n[self.kernel_size // 2,self.kernel_size // 2] = 1
+            k = scipy.ndimage.gaussian_filter(n, sigma=self.std)
+            k = torch.from_numpy(k)
+            self.k = k
+            for name, f in self.named_parameters():
+                f.data.copy_(k)
+        elif self.blur_type == "motion":
+            k = Kernel(size=(self.kernel_size, self.kernel_size), intensity=self.std).kernelMatrix
+            k = torch.from_numpy(k)
+            self.k = k
+            for name, f in self.named_parameters():
+                f.data.copy_(k)
+
+    def update_weights(self, k):
+        if not torch.is_tensor(k):
+            k = torch.from_numpy(k).to(self.device)
+        for name, f in self.named_parameters():
+            f.data.copy_(k)
+
+    def get_kernel(self):
+        return self.k
+
+class MotionBlurOperator():
+    def __init__(self, kernel_size, intensity, device):
+        self.device = device
+        self.kernel_size = kernel_size
+        self.conv = Blurkernel(blur_type='motion',
+                               kernel_size=kernel_size,
+                               std=intensity,
+                               device=device).to(device)  # should we keep this device term?
+
+        self.kernel = Kernel(size=(kernel_size, kernel_size), intensity=intensity)
+        kernel = torch.tensor(self.kernel.kernelMatrix, dtype=torch.float32)
+        self.conv.update_weights(kernel)
+    
+    def forward(self, data, **kwargs):
+        # A^T * A 
+        return self.conv(data)
+
+    def transpose(self, data, **kwargs):
+        return data
+
+    def get_kernel(self):
+        # kernel = self.kernel.kernelMatrix.type(torch.float32).to(self.device)
+        kernel = torch.tensor(self.kernel.kernelMatrix, dtype=torch.float32)
+        return kernel.view(1, 1, self.kernel_size, self.kernel_size)
+
+
+class GaussialBlurOperator():
+    def __init__(self, kernel_size, intensity, device):
+        self.device = device
+        self.kernel_size = kernel_size
+        self.conv = Blurkernel(blur_type='gaussian',
+                               kernel_size=kernel_size,
+                               std=intensity,
+                               device=device).to(device)
+        self.kernel = self.conv.get_kernel()
+        self.conv.update_weights(self.kernel.type(torch.float32))
+
+    def forward(self, data, **kwargs):
+        return self.conv(data)
+
+    def transpose(self, data, **kwargs):
+        return data
+
+    def get_kernel(self):
+        return self.kernel.view(1, 1, self.kernel_size, self.kernel_size)
 
 
 if __name__ == '__main__':

@@ -5,8 +5,8 @@ import logging
 import numpy as np
 from datetime import datetime
 from collections import OrderedDict
-import hdf5storage
 from scipy import ndimage
+import hdf5storage
 
 import torch
 
@@ -14,6 +14,8 @@ from utils import utils_model
 from utils import utils_logger
 from utils import utils_sisr as sr
 from utils import utils_image as util
+
+from utils.utils_deblur import MotionBlurOperator, GaussialBlurOperator
 
 from guided_diffusion import dist_util
 from guided_diffusion.script_util import (
@@ -64,7 +66,7 @@ def main():
     model_name              = 'diffusion_ffhq_10m'  #diffusion_ffhq_10m, drunet_color, set diffusino model
     testset_name            = 'set5'            # set testing set,  'set18' | 'set24'
     num_train_timesteps     = 1000
-    iter_num                = 1000              # set number of iterations, default: 40 for demosaicing
+    iter_num                = 20              # set number of iterations, default: 40 for demosaicing
     iter_num_U              = 1                 # set number of inner iterations, default: 1
     skip                    = num_train_timesteps//iter_num     # skip interval
 
@@ -76,15 +78,19 @@ def main():
     border                  = 0
 	
     sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
-    lambda_                 = 1.                # key parameter lambda
+    lambda_                 = 2.5                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
     
     log_process             = False
     ddim_sample             = False             # sampling method
     model_output_type       = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
-    skip_type               = 'uniform'         # uniform, quad
+    skip_type               = 'quad'         # uniform, quad
     eta                     = 1.0               # eta for ddim sampling
-    zeta                    = 1.0               
+    zeta                    = 1.0     
+
+    calc_LPIPS              = True
+    use_DIY_kernel          = True
+    blur_mode               = 'motion'                          # Gaussian; motion          
 
     sf                      = 1
     task_current            = 'deblur'          
@@ -93,11 +99,11 @@ def main():
     model_zoo               = os.path.join(cwd, 'model_zoo')    # fixed
     testsets                = os.path.join(cwd, 'testsets')     # fixed
     results                 = os.path.join(cwd, 'results')      # fixed
-    result_name             = testset_name + '_' + task_current + '_' + model_name
+    result_name             = f'{testset_name}_{task_current}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_zeta{zeta}_lambda{lambda_}_blurmode{blur_mode}'
     model_path              = os.path.join(model_zoo, model_name+'.pt')
     device                  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
-    
+
     # noise schedule 
     beta_start              = 0.002 / 1000
     beta_end                = 20 / 1000
@@ -110,18 +116,32 @@ def main():
     reduced_alpha_cumprod   = torch.div(sqrt_1m_alphas_cumprod, sqrt_alphas_cumprod)        # equivalent noise sigma on image
 
     noise_model_t           = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_level_model)
-    #noise_model_t           = 0
+    noise_model_t           = 0
     
     noise_inti_img          = 50 / 255
     t_start                 = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_inti_img) # start timestep of the diffusion process
-    # t_start                 = num_train_timesteps - 1              
+    t_start                 = num_train_timesteps - 1              
 
     # --------------------------------
     # load kernel
     # --------------------------------
+    if use_DIY_kernel:
+        if blur_mode == 'Gaussian':
+            kernel = GaussialBlurOperator(kernel_size=61, intensity=3.0, device=device)
+        elif blur_mode == 'motion':
+            kernel = MotionBlurOperator(kernel_size=61, intensity=0.5, device=device)
+        k_tensor = kernel.get_kernel().to(device, dtype=torch.float)
+        #k = k / 2 + 0.5
+        k = k_tensor.clone().detach().cpu().numpy()       #[0,1]
+        k = np.squeeze(k)
+        k = np.squeeze(k)
+    else:
+        k_index = 0
+        kernels = hdf5storage.loadmat(os.path.join(cwd, 'kernels', 'Levin09.mat'))['kernels']
+        k = kernels[0, k_index].astype(np.float64)
 
-    kernels = hdf5storage.loadmat(os.path.join(cwd, 'kernels', 'Levin09.mat'))['kernels']
-
+    util.imshow(k) if show_img else None
+    
     # ----------------------------------------
     # L_path, E_path, H_path
     # ----------------------------------------
@@ -180,7 +200,7 @@ def main():
         dist_util.load_state_dict(args.model_path, map_location="cpu")
     )
     model.eval()
-    for k, v in model.named_parameters():
+    for _k, v in model.named_parameters():
         v.requires_grad = False
     model = model.to(device)
 
@@ -190,221 +210,231 @@ def main():
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
-
-    test_results_ave = OrderedDict()
-    test_results_ave['psnr'] = []  # record average PSNR for each kernel
     
-    for k_index in range(kernels.shape[1]):
-
-        logger.info('-------k:{:>2d} ---------'.format(k_index))
-        test_results = OrderedDict()
-        test_results['psnr'] = []
-        k = kernels[0, k_index].astype(np.float64)
-        util.imshow(k) if show_img else None
-
-        def test_rho(lambda_=lambda_, model_output_type=model_output_type):
-            for idx, img in enumerate(L_paths):
-                model_out_type = model_output_type
-
-                # --------------------------------
-                # (1) get img_L
-                # --------------------------------
-
-                img_name, ext = os.path.splitext(os.path.basename(img))
-                img_H = util.imread_uint(img, n_channels=n_channels)
-                img_H = util.modcrop(img_H, 8)  # modcrop
-
-                img_L = ndimage.filters.convolve(img_H, np.expand_dims(k, axis=2), mode='wrap')
-                util.imshow(img_L) if show_img else None
-                img_L = util.uint2single(img_L)
-
-                np.random.seed(seed=0)  # for reproducibility
-                img_L = img_L * 2 - 1
-                img_L += np.random.normal(0, noise_level_img * 2, img_L.shape) # add AWGN
-                img_L = img_L / 2 + 0.5
-
-                # --------------------------------
-                # (2) get rhos and sigmas
-                # --------------------------------
-
-                sigmas = []
-                sigma_ks = []
-                rhos = []
-                for i in range(num_train_timesteps):
-                    sigmas.append(reduced_alpha_cumprod[num_train_timesteps-1-i])
-                    sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
-                    rhos.append(lambda_*(sigma**2)/(sigma_ks[i]**2))
-                        
-                rhos, sigmas, sigma_ks = torch.tensor(rhos).to(device), torch.tensor(sigmas).to(device), torch.tensor(sigma_ks).to(device)
-                
-                # --------------------------------
-                # (3) initialize x, and pre-calculation
-                # --------------------------------
-
-                # x = util.single2tensor4(img_L).to(device)
-
-                y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
-
-                t_y = utils_model.find_nearest(reduced_alpha_cumprod,noise_level_img)
-                sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
-                x = sqrt_alpha_effective * y + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
-                        sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(y)
-                # x = torch.randn_like(y)     
-
-                k_tensor = util.single2tensor4(np.expand_dims(k, 2)).to(device)
-
-                FB, FBC, F2B, FBFy = sr.pre_calculate(y, k_tensor, sf)
-
-                # --------------------------------
-                # (4) main iterations
-                # --------------------------------
-
-                progress_img = []
-                # create sequence of timestep for sampling
-                if skip_type == 'uniform':
-                    seq = [i*skip for i in range(iter_num)]
-                    if skip > 1:
-                        seq.append(num_train_timesteps-1)
-                elif skip_type == "quad":
-                    seq = np.sqrt(np.linspace(0, num_train_timesteps**2, iter_num))
-                    seq = [int(s) for s in list(seq)]
-                    seq[-1] = seq[-1] - 1
-                progress_seq = seq[::(len(seq)//10)]
-                progress_seq.append(seq[-1])
-                
-                # reverse diffusion for one image from random noise
-                for i in range(len(seq)):
-                    curr_sigma = sigmas[seq[i]].cpu().numpy()
-                    # time step associated with the noise level sigmas[i]
-                    t_i = utils_model.find_nearest(reduced_alpha_cumprod,curr_sigma)
-                    # skip iters
-                    if t_i > t_start:
-                        continue
-                    for u in range(iter_num_U):
-                        # --------------------------------
-                        # step 1, reverse diffsuion step
-                        # --------------------------------
-
-                        # solve equation 6b with one reverse diffusion step
-                        x0 = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type=model_out_type, \
-                                 model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
-                        # x0 = utils_model.test_mode(utils_model.model_fn, model, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255, \
-                        #   model_out_type=model_out_type, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
-
-                        # --------------------------------
-                        # step 2, FFT
-                        # --------------------------------
-
-                        if seq[i] != seq[-1]:
-                            if sub_1_analytic:
-                                if model_out_type == 'pred_xstart':
-                                    tau = rhos[t_i].float().repeat(1, 1, 1, 1)
-                                    # when noise level less than given image noise, skip
-                                    if i < num_train_timesteps-noise_model_t:   
-                                        x0 = x0 / 2 + 0.5
-                                        x0 = sr.data_solution(x0.float(), FB, FBC, F2B, FBFy, tau, sf)
-                                        x0 = x0 * 2 - 1
-                                    else:
-                                        model_out_type = 'pred_x_prev'
-                                        x0 = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type=model_out_type, \
-                                                model_diffusion=model, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
-                                        # x0 = utils_model.test_mode(utils_model.model_fn, model, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255, \
-                                        #   model_out_type=model_out_type, diffusion=diffusion, ddim_sample=False, alphas_cumprod=alphas_cumprod)
-                                        pass
-                            else:
-                                # TODO: first order solver
-                                #Tx = ndimage.filters.convolve(x, np.expand_dims(k, axis=2), mode='wrap')
-                                #x = x - 1 / (2*rhos[t_i]) * (Tx - y_t)
-                                pass
-
-                        if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1] and u == iter_num_U-1):
-                            #x = sqrt_alphas_cumprod[t_i] * (x0) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
-                            
-                            t_im1 = utils_model.find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
-                            # calculate \hat{\eposilon}
-                            eps = (x - sqrt_alphas_cumprod[t_i] * x0) / sqrt_1m_alphas_cumprod[t_i]
-                            eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
-                            x = sqrt_alphas_cumprod[t_im1] * x0 + np.sqrt(1-zeta) * (torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
-                                        + eta_sigma * torch.randn_like(x)) + np.sqrt(zeta) * sqrt_1m_alphas_cumprod[t_im1] * torch.randn_like(x)
-                        else:
-                            x = x0
-                            
-                        # set back to x_t from x_{t-1}
-                        if u < iter_num_U-1 and seq[i] != seq[-1]:
-                            x = torch.sqrt(alphas[t_i]) * x + torch.sqrt(betas[t_i]) * torch.randn_like(x)
-
-                    # save the process
-                    if save_progressive and (seq[i] in progress_seq):
-                        x_0 = (x/2+0.5)
-                        x_show = x_0.clone().detach().cpu().numpy()       #[0,1]
-                        x_show = np.squeeze(x_show)
-                        if x_show.ndim == 3:
-                            x_show = np.transpose(x_show, (1, 2, 0))
-                        progress_img.append(x_show)
-                        if log_process:
-                            logger.info('{:>4d}, steps: {:>4d}, np.max(x_show): {:.4f}, np.min(x_show): {:.4f}'.format(seq[i], t_i, np.max(x_show), np.min(x_show)))
-                        
-                        if show_img:
-                            util.imshow(x_show)
+    test_results = OrderedDict()
+    test_results['psnr'] = []
+    if calc_LPIPS:
+        import lpips
+        loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
+        test_results['lpips'] = []
 
 
-                # --------------------------------
-                # (3) img_E
-                # --------------------------------
+    def test_rho(lambda_=lambda_, model_output_type=model_output_type):
+        for idx, img in enumerate(L_paths):
+            model_out_type = model_output_type
 
-                img_E = util.tensor2uint(x_0)
+            # --------------------------------
+            # (1) get img_L
+            # --------------------------------
 
-                psnr = util.calculate_psnr(img_E, img_H, border=border)  # change with your own border
-                test_results['psnr'].append(psnr)
-                logger.info('{:->4d}--> {:>10s} --k:{:>2d} PSNR: {:.2f}dB'.format(idx+1, img_name+ext, k_index, psnr))
+            img_name, ext = os.path.splitext(os.path.basename(img))
+            img_H = util.imread_uint(img, n_channels=n_channels)
+            img_H = util.modcrop(img_H, 8)  # modcrop
 
-                if n_channels == 1:
-                    img_H = img_H.squeeze()
+            # mode='wrap' is important for analytical solution
+            img_L = ndimage.filters.convolve(img_H, np.expand_dims(k, axis=2), mode='wrap')
+            util.imshow(img_L) if show_img else None
+            img_L = util.uint2single(img_L)
 
-                if save_E:
-                    util.imsave(img_E, os.path.join(E_path, img_name+'_k'+str(k_index)+'_'+model_name+'.png'))
+            np.random.seed(seed=0)  # for reproducibility
+            img_L = img_L * 2 - 1
+            img_L += np.random.normal(0, noise_level_img * 2, img_L.shape) # add AWGN
+            img_L = img_L / 2 + 0.5
 
-                if save_progressive:
-                    now = datetime.now()
-                    current_time = now.strftime("%Y_%m_%d_%H_%M_%S")
-                    img_total = cv2.hconcat(progress_img)
-                    if show_img:
-                        util.imshow(img_total,figsize=(80,4))
-                    util.imsave(img_total*255., os.path.join(E_path, img_name+f'_sigma_{noise_level_img}_process_lambda_{lambda_}_{current_time}_psnr_{psnr}.png'))
+            # --------------------------------
+            # (2) get rhos and sigmas
+            # --------------------------------
+
+            sigmas = []
+            sigma_ks = []
+            rhos = []
+            for i in range(num_train_timesteps):
+                sigmas.append(reduced_alpha_cumprod[num_train_timesteps-1-i])
+                sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
+                rhos.append(lambda_*(sigma**2)/(sigma_ks[i]**2))
                     
-                # --------------------------------
-                # (4) img_LEH
-                # --------------------------------
+            rhos, sigmas, sigma_ks = torch.tensor(rhos).to(device), torch.tensor(sigmas).to(device), torch.tensor(sigma_ks).to(device)
+            
+            # --------------------------------
+            # (3) initialize x, and pre-calculation
+            # --------------------------------
 
-                if save_LEH:
-                    img_L = util.single2uint(img_L)
-                    k_v = k/np.max(k)*1.0
-                    k_v = util.single2uint(np.tile(k_v[..., np.newaxis], [1, 1, 3]))
-                    k_v = cv2.resize(k_v, (3*k_v.shape[1], 3*k_v.shape[0]), interpolation=cv2.INTER_NEAREST)
-                    img_I = cv2.resize(img_L, (sf*img_L.shape[1], sf*img_L.shape[0]), interpolation=cv2.INTER_NEAREST)
-                    img_I[:k_v.shape[0], -k_v.shape[1]:, :] = k_v
-                    img_I[:img_L.shape[0], :img_L.shape[1], :] = img_L
-                    util.imshow(np.concatenate([img_I, img_E, img_H], axis=1), title='LR / Recovered / Ground-truth') if show_img else None
-                    util.imsave(np.concatenate([img_I, img_E, img_H], axis=1), os.path.join(E_path, img_name+'_k'+str(k_index)+'_LEH.png'))
+            # x = util.single2tensor4(img_L).to(device)
 
-                if save_L:
-                    util.imsave(util.single2uint(img_L), os.path.join(E_path, img_name+'_k'+str(k_index)+'_LR.png'))
-            return test_results
+            y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
+
+            t_y = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_level_img)
+            sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
+            x = sqrt_alpha_effective * y + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
+                    sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(y)
+            # x = torch.randn_like(y)     
+
+            k_tensor = util.single2tensor4(np.expand_dims(k, 2)).to(device)
+
+            FB, FBC, F2B, FBFy = sr.pre_calculate(y, k_tensor, sf)
+
+            # --------------------------------
+            # (4) main iterations
+            # --------------------------------
+
+            progress_img = []
+            # create sequence of timestep for sampling
+            if skip_type == 'uniform':
+                seq = [i*skip for i in range(iter_num)]
+                if skip > 1:
+                    seq.append(num_train_timesteps-1)
+            elif skip_type == "quad":
+                seq = np.sqrt(np.linspace(0, num_train_timesteps**2, iter_num))
+                seq = [int(s) for s in list(seq)]
+                seq[-1] = seq[-1] - 1
+            progress_seq = seq[::max(len(seq)//10,1)]
+            if progress_seq[-1] != seq[-1]:
+                progress_seq.append(seq[-1])
+            
+            # reverse diffusion for one image from random noise
+            for i in range(len(seq)):
+                curr_sigma = sigmas[seq[i]].cpu().numpy()
+                # time step associated with the noise level sigmas[i]
+                t_i = utils_model.find_nearest(reduced_alpha_cumprod,curr_sigma)
+                # skip iters
+                if t_i > t_start:
+                    continue
+                for u in range(iter_num_U):
+                    # --------------------------------
+                    # step 1, reverse diffsuion step
+                    # --------------------------------
+
+                    # solve equation 6b with one reverse diffusion step
+                    x0 = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type=model_out_type, \
+                                model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
+                    # x0 = utils_model.test_mode(utils_model.model_fn, model, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255, \
+                    #   model_out_type=model_out_type, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
+
+                    # --------------------------------
+                    # step 2, FFT
+                    # --------------------------------
+
+                    if seq[i] != seq[-1]:
+                        if sub_1_analytic:
+                            if model_out_type == 'pred_xstart':
+                                tau = rhos[t_i].float().repeat(1, 1, 1, 1)
+                                # when noise level less than given image noise, skip
+                                if i < num_train_timesteps-noise_model_t:   
+                                    x0 = x0 / 2 + 0.5
+                                    x0 = sr.data_solution(x0.float(), FB, FBC, F2B, FBFy, tau, sf)
+                                    x0 = x0 * 2 - 1
+                                else:
+                                    model_out_type = 'pred_x_prev'
+                                    x0 = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type=model_out_type, \
+                                            model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
+                                    # x0 = utils_model.test_mode(utils_model.model_fn, model, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255, \
+                                    #   model_out_type=model_out_type, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
+                                    pass
+                        else:
+                            # TODO: first order solver
+                            #Tx = ndimage.filters.convolve(x, np.expand_dims(k, axis=2), mode='wrap')
+                            #x = x - 1 / (2*rhos[t_i]) * (Tx - y_t)
+                            pass
+
+                    if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1] and u == iter_num_U-1):
+                        #x = sqrt_alphas_cumprod[t_i] * (x0) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
+                        
+                        t_im1 = utils_model.find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
+                        # calculate \hat{\eposilon}
+                        eps = (x - sqrt_alphas_cumprod[t_i] * x0) / sqrt_1m_alphas_cumprod[t_i]
+                        eta_sigma = eta * sqrt_1m_alphas_cumprod[t_im1] / sqrt_1m_alphas_cumprod[t_i] * torch.sqrt(betas[t_i])
+                        x = sqrt_alphas_cumprod[t_im1] * x0 + np.sqrt(1-zeta) * (torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
+                                    + eta_sigma * torch.randn_like(x)) + np.sqrt(zeta) * sqrt_1m_alphas_cumprod[t_im1] * torch.randn_like(x)
+                    else:
+                        x = x0
+                        
+                    # set back to x_t from x_{t-1}
+                    if u < iter_num_U-1 and seq[i] != seq[-1]:
+                        x = torch.sqrt(alphas[t_i]) * x + torch.sqrt(betas[t_i]) * torch.randn_like(x)
+
+                # save the process
+                x_0 = (x/2+0.5)
+                if save_progressive and (seq[i] in progress_seq):
+                    x_show = x_0.clone().detach().cpu().numpy()       #[0,1]
+                    x_show = np.squeeze(x_show)
+                    if x_show.ndim == 3:
+                        x_show = np.transpose(x_show, (1, 2, 0))
+                    progress_img.append(x_show)
+                    if log_process:
+                        logger.info('{:>4d}, steps: {:>4d}, np.max(x_show): {:.4f}, np.min(x_show): {:.4f}'.format(seq[i], t_i, np.max(x_show), np.min(x_show)))
+                    
+                    if show_img:
+                        util.imshow(x_show)
+
+
+            # --------------------------------
+            # (3) img_E
+            # --------------------------------
+
+            img_E = util.tensor2uint(x_0)
+                
+            if calc_LPIPS:
+                img_H_tensor = np.transpose(img_H, (2, 0, 1))
+                img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(device)
+                img_H_tensor = img_H_tensor / 255 * 2 -1
+                lpips_score = loss_fn_vgg(x_0.detach()*2-1, img_H_tensor)
+                test_results['lpips'].append(lpips_score.cpu().detach().numpy()[0][0][0][0])
+
+            psnr = util.calculate_psnr(img_E, img_H, border=border)  # change with your own border
+            test_results['psnr'].append(psnr)
+            logger.info('{:->4d}--> {:>10s} PSNR: {:.2f}dB'.format(idx+1, img_name+ext, psnr))
+
+            if n_channels == 1:
+                img_H = img_H.squeeze()
+
+            if save_E:
+                util.imsave(img_E, os.path.join(E_path, img_name+'_'+model_name+'.png'))
+
+            if save_progressive:
+                now = datetime.now()
+                current_time = now.strftime("%Y_%m_%d_%H_%M_%S")
+                img_total = cv2.hconcat(progress_img)
+                if show_img:
+                    util.imshow(img_total,figsize=(80,4))
+                util.imsave(img_total*255., os.path.join(E_path, img_name+'_sigma_{:.3f}_process_lambda_{:.3f}_{}_psnr_{:.4f}.png'.format(noise_level_img,lambda_,current_time,psnr)))
+                                                                            
+            # --------------------------------
+            # (4) img_LEH
+            # --------------------------------
+
+            if save_LEH:
+                img_L = util.single2uint(img_L)
+                k_v = k/np.max(k)*1.0
+                k_v = util.single2uint(np.tile(k_v[..., np.newaxis], [1, 1, 3]))
+                k_v = cv2.resize(k_v, (3*k_v.shape[1], 3*k_v.shape[0]), interpolation=cv2.INTER_NEAREST)
+                img_I = cv2.resize(img_L, (sf*img_L.shape[1], sf*img_L.shape[0]), interpolation=cv2.INTER_NEAREST)
+                img_I[:k_v.shape[0], -k_v.shape[1]:, :] = k_v
+                img_I[:img_L.shape[0], :img_L.shape[1], :] = img_L
+                util.imshow(np.concatenate([img_I, img_E, img_H], axis=1), title='LR / Recovered / Ground-truth') if show_img else None
+                util.imsave(np.concatenate([img_I, img_E, img_H], axis=1), os.path.join(E_path, img_name+'_LEH.png'))
+
+            if save_L:
+                util.imsave(util.single2uint(img_L), os.path.join(E_path, img_name+'_LR.png'))
+        return test_results
         
-        
-        # experiments
-        lambdas = [0.1*i for i in range(10,15)]
-        for lambda_ in lambdas:
-            test_results = test_rho(lambda_, model_output_type=model_output_type)
+    
+    # experiments
+    lambdas = [lambda_*i for i in range(1,2)]
+    for lambda_ in lambdas:
+        test_results = test_rho(lambda_, model_output_type=model_output_type)
 
 
-        # --------------------------------
-        # Average PSNR
-        # --------------------------------
+    # --------------------------------
+    # Average PSNR
+    # --------------------------------
 
-        ave_psnr = sum(test_results['psnr']) / len(test_results['psnr'])
-        logger.info('------> Average PSNR of ({}), kernel: ({}) sigma: ({:.2f}): {:.2f} dB'.format(testset_name, k_index, noise_level_model, ave_psnr))
-        test_results_ave['psnr'].append(ave_psnr)
+    ave_psnr = sum(test_results['psnr']) / len(test_results['psnr'])
+    logger.info('------> Average PSNR of ({}), sigma: ({:.3f}): {:.4f} dB'.format(testset_name, noise_level_model, ave_psnr))
+
+
+    if calc_LPIPS:
+        ave_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
+        logger.info('------> Average LPIPS of ({}) sigma: ({:.3f}): {:.4f}'.format(testset_name, noise_level_model, ave_lpips))
 
 if __name__ == '__main__':
 
