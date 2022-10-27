@@ -22,10 +22,8 @@ from guided_diffusion.script_util import (
     NUM_CLASSES,
     model_and_diffusion_defaults,
     create_model_and_diffusion,
-    add_dict_to_argparser,
     args_to_dict,
 )
-import argparse
 
 
 """
@@ -63,8 +61,8 @@ def main():
 
     noise_level_img         = 12.75/255.0           # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
-    model_name              = 'diffusion_ffhq_10m'  #diffusion_ffhq_10m, drunet_color, set diffusino model
-    testset_name            = 'set5'            # set testing set,  'set18' | 'set24'
+    model_name              = 'diffusion_ffhq_10m'  # diffusion_ffhq_10m, 256x256_diffusion_uncond; set diffusino model
+    testset_name            = 'set5'            # set testing set,  'imagenet_val' | 'ffhq_val'
     num_train_timesteps     = 1000
     iter_num                = 20              # set number of iterations, default: 40 for demosaicing
     iter_num_U              = 1                 # set number of inner iterations, default: 1
@@ -78,7 +76,7 @@ def main():
     border                  = 0
 	
     sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
-    lambda_                 = 2.5                # key parameter lambda
+    lambda_                 = 4.5                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
     
     log_process             = False
@@ -90,7 +88,9 @@ def main():
 
     calc_LPIPS              = True
     use_DIY_kernel          = True
-    blur_mode               = 'motion'                          # Gaussian; motion          
+    blur_mode               = 'motion'                          # Gaussian; motion      
+    kernel_size             = 61
+    kernel_std              = 3.0 if blur_mode == 'Gaussian' else 0.5
 
     sf                      = 1
     task_current            = 'deblur'          
@@ -127,11 +127,10 @@ def main():
     # --------------------------------
     if use_DIY_kernel:
         if blur_mode == 'Gaussian':
-            kernel = GaussialBlurOperator(kernel_size=61, intensity=3.0, device=device)
+            kernel = GaussialBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
         elif blur_mode == 'motion':
-            kernel = MotionBlurOperator(kernel_size=61, intensity=0.5, device=device)
+            kernel = MotionBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
         k_tensor = kernel.get_kernel().to(device, dtype=torch.float)
-        #k = k / 2 + 0.5
         k = k_tensor.clone().detach().cpu().numpy()       #[0,1]
         k = np.squeeze(k)
         k = np.squeeze(k)
@@ -158,42 +157,19 @@ def main():
     # load model
     # ----------------------------------------
 
-    def create_argparser():
-        defaults = dict(
-            clip_denoised=True,
-            num_samples=1,
-            batch_size=1,
-            use_ddim=False,
+    model_config = dict(
             model_path=model_path,
-            diffusion_steps=num_train_timesteps,
-            noise_schedule='linear',
-            num_head_channels=64,
-            resblock_updown=True,
-            use_fp16=False,
-            use_scale_shift_norm=True,
-            num_heads=4,
-            num_heads_upsample=-1,
-            use_new_attention_order=False,
-            timestep_respacing="",
-            use_kl=False,
-            predict_xstart=False,
-            rescale_timesteps=False,
-            rescale_learned_sigmas=False,
-            channel_mult="",
-            learn_sigma=True,
-            class_cond=False,
-            use_checkpoint=False,
-            image_size=256,
             num_channels=128,
             num_res_blocks=1,
             attention_resolutions="16",
-            dropout=0.1,
+        ) if model_name == 'diffusion_ffhq_10m' \
+        else dict(
+            model_path=model_path,
+            num_channels=256,
+            num_res_blocks=2,
+            attention_resolutions="8,16,32",
         )
-        # defaults.update(model_and_diffusion_defaults())
-        parser = argparse.ArgumentParser()
-        add_dict_to_argparser(parser, defaults)
-        return parser
-    args = create_argparser().parse_args([])
+    args = utils_model.create_argparser(model_config).parse_args([])
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys()))
     model.load_state_dict(
@@ -207,6 +183,7 @@ def main():
     logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
     logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, skipstep analytic steps:{}'.format(eta, zeta, lambda_, noise_model_t))
     logger.info('start step:{}, skip_type:{}, skip interval:{}'.format(t_start, skip_type, skip))
+    logger.info('use_DIY_kernel:{}, blur mode:{}'.format(use_DIY_kernel, blur_mode))
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
@@ -263,11 +240,12 @@ def main():
 
             y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
 
+            # for y with given noise level, add noise from t_y
             t_y = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_level_img)
             sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
-            x = sqrt_alpha_effective * y + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
+            x = sqrt_alpha_effective * (2*y-1) + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
                     sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(y)
-            # x = torch.randn_like(y)     
+            # x = torch.randn_like(y)
 
             k_tensor = util.single2tensor4(np.expand_dims(k, 2)).to(device)
 
@@ -415,26 +393,25 @@ def main():
 
             if save_L:
                 util.imsave(util.single2uint(img_L), os.path.join(E_path, img_name+'_LR.png'))
-        return test_results
         
+        # --------------------------------
+        # Average PSNR and LPIPS
+        # --------------------------------
+
+        ave_psnr = sum(test_results['psnr']) / len(test_results['psnr'])
+        logger.info('------> Average PSNR of ({}), sigma: ({:.3f}): {:.4f} dB'.format(testset_name, noise_level_model, ave_psnr))
+
+
+        if calc_LPIPS:
+            ave_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
+            logger.info('------> Average LPIPS of ({}) sigma: ({:.3f}): {:.4f}'.format(testset_name, noise_level_model, ave_lpips))
+
     
     # experiments
     lambdas = [lambda_*i for i in range(1,2)]
     for lambda_ in lambdas:
-        test_results = test_rho(lambda_, model_output_type=model_output_type)
+        test_rho(lambda_, model_output_type=model_output_type)
 
-
-    # --------------------------------
-    # Average PSNR
-    # --------------------------------
-
-    ave_psnr = sum(test_results['psnr']) / len(test_results['psnr'])
-    logger.info('------> Average PSNR of ({}), sigma: ({:.3f}): {:.4f} dB'.format(testset_name, noise_level_model, ave_psnr))
-
-
-    if calc_LPIPS:
-        ave_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
-        logger.info('------> Average LPIPS of ({}) sigma: ({:.3f}): {:.4f}'.format(testset_name, noise_level_model, ave_lpips))
 
 if __name__ == '__main__':
 

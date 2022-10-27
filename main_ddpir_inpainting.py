@@ -16,10 +16,8 @@ from guided_diffusion.script_util import (
     NUM_CLASSES,
     model_and_diffusion_defaults,
     create_model_and_diffusion,
-    add_dict_to_argparser,
     args_to_dict,
 )
-import argparse
 
 """
 Spyder (Python 3.7)
@@ -62,8 +60,8 @@ def main():
 
     noise_level_img         = 0/255.0           # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
-    model_name              = 'diffusion_celeba256_250000'  # diffusion_celeba256_250000, diffusion_ffhq_10m set diffusino model
-    testset_name            = 'gts/face'        # set testing set,  'set18' | 'set24'
+    model_name              = 'diffusion_celeba256_250000'  # diffusion_celeba256_250000, diffusion_ffhq_10m; set diffusino model
+    testset_name            = 'gts/face'        # set testing set, 'ffhq_val'
     mask_name               = 'gt_keep_masks/face/000000.png'
     num_train_timesteps     = 1000
     iter_num                = 1000              # set number of iterations, default: 40 for demosaicing
@@ -137,42 +135,19 @@ def main():
     # load model
     # ----------------------------------------
 
-    def create_argparser():
-        defaults = dict(
-            clip_denoised=True,
-            num_samples=1,
-            batch_size=1,
-            use_ddim=False,
+    model_config = dict(
             model_path=model_path,
-            diffusion_steps=num_train_timesteps,
-            noise_schedule='linear',
-            num_head_channels=64,
-            resblock_updown=True,
-            use_fp16=False,
-            use_scale_shift_norm=True,
-            num_heads=4,
-            num_heads_upsample=-1,
-            use_new_attention_order=False,
-            timestep_respacing="",
-            use_kl=False,
-            predict_xstart=False,
-            rescale_timesteps=False,
-            rescale_learned_sigmas=False,
-            channel_mult="",
-            learn_sigma=True,
-            class_cond=False,
-            use_checkpoint=False,
-            image_size=256,
+            num_channels=128,
+            num_res_blocks=1,
+            attention_resolutions="16",
+        ) if model_name == 'diffusion_ffhq_10m' \
+        else dict(
+            model_path=model_path,
             num_channels=256,
             num_res_blocks=2,
             attention_resolutions="8,16,32",
-            dropout=0.1,
         )
-        # defaults.update(model_and_diffusion_defaults())
-        parser = argparse.ArgumentParser()
-        add_dict_to_argparser(parser, defaults)
-        return parser
-    args = create_argparser().parse_args([])
+    args = utils_model.create_argparser(model_config).parse_args([])
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys()))
     model.load_state_dict(
@@ -255,12 +230,12 @@ def main():
                 seq[-1] = seq[-1] - 1
             progress_seq = seq[::(len(seq)//10)]
             progress_seq.append(seq[-1])
+            
             # reverse diffusion for one image from random noise
             for i in range(len(seq)):
                 curr_sigma = sigmas[seq[i]].cpu().numpy()
                 # time step associated with the noise level sigmas[i]
                 t_i = utils_model.find_nearest(reduced_alpha_cumprod,curr_sigma)
-                #vec_t = torch.tensor([999-i] * x.shape[0], device=device)
                 # skip iters
                 if t_i > t_start:
                     continue
@@ -286,7 +261,7 @@ def main():
                     # step 2, closed-form solution
                     # --------------------------------
 
-                    # analytic solution to equation 6a
+                    # analytic solution
                     if generate_mode == 'DDPIR': 
                         # solve sub-problem
                         if sub_1_analytic:
@@ -296,11 +271,10 @@ def main():
                                     x0 = (mask*y + rhos[t_i].float()*x0).div(mask+rhos[t_i])
                                 else:
                                     pass
-                                
-                            else:
+                            elif model_out_type == 'pred_x_prev':
                                 # when noise level less than given image noise, skip
                                 if i < num_train_timesteps-noise_model_t:    
-                                    x = (mask*y + rhos[t_i].float()*x).div(mask+rhos[t_i])
+                                    x = (mask*y + rhos[t_i].float()*x).div(mask+rhos[t_i]) # y-->yt ?
                                 else:
                                     pass
                         else:

@@ -4,6 +4,9 @@ import torch
 from utils import utils_image as util
 from functools import partial
 
+from guided_diffusion.script_util import add_dict_to_argparser
+import argparse
+
 '''
 modified by Kai Zhang (github: https://github.com/cszn)
 03/03/2019
@@ -342,6 +345,46 @@ def describe_params(model):
             v = param.data.clone().float()
             msg += ' | {:>6.3f} | {:>6.3f} | {:>6.3f} | {:>6.3f} || {:s}'.format(v.mean(), v.min(), v.max(), v.std(), name) + '\n'
     return msg
+
+# ----------------------------------------
+# load model
+# ----------------------------------------
+
+def create_argparser(model_config):
+    defaults = dict(
+        clip_denoised=True,
+        num_samples=1,
+        batch_size=1,
+        use_ddim=False,
+        model_path='',
+        diffusion_steps=1000,
+        noise_schedule='linear',
+        num_head_channels=64,
+        resblock_updown=True,
+        use_fp16=False,
+        use_scale_shift_norm=True,
+        num_heads=4,
+        num_heads_upsample=-1,
+        use_new_attention_order=False,
+        timestep_respacing="",
+        use_kl=False,
+        predict_xstart=False,
+        rescale_timesteps=False,
+        rescale_learned_sigmas=False,
+        channel_mult="",
+        learn_sigma=True,
+        class_cond=False,
+        use_checkpoint=False,
+        image_size=256,
+        num_channels=128,
+        num_res_blocks=1,
+        attention_resolutions="16",
+        dropout=0.1,
+    )
+    defaults.update(model_config)
+    parser = argparse.ArgumentParser()
+    add_dict_to_argparser(parser, defaults)
+    return parser
 
 
 if __name__ == '__main__':

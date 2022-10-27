@@ -22,10 +22,8 @@ from guided_diffusion.script_util import (
     NUM_CLASSES,
     model_and_diffusion_defaults,
     create_model_and_diffusion,
-    add_dict_to_argparser,
     args_to_dict,
 )
-import argparse
 
 from datetime import datetime
 
@@ -69,10 +67,10 @@ def main():
     # Preparation
     # ----------------------------------------
 
-    noise_level_img         = 12.75/255.0           # set AWGN noise level for LR image, default: 0
+    noise_level_img         = 12.75/255.0       # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
-    model_name              = 'diffusion_ffhq_10m'  # set diffusino model
-    testset_name            = 'set5'            # set testing set,  'set18' | 'set24'
+    model_name              = '256x256_diffusion_uncond'  # diffusion_ffhq_10m, 256x256_diffusion_uncond; set diffusino model
+    testset_name            = 'set5'            # set testing set,  'imagenet_val' | 'ffhq_val'
     num_train_timesteps     = 1000
     iter_num                = 20              # set number of sampling iterations, default: 1000 for demosaicing
     iter_num_U              = 1                 # set number of inner iterations, default: 1
@@ -87,7 +85,7 @@ def main():
     border                  = 0
 
     sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
-    lambda_                 = 1.                # key parameter lambda
+    lambda_                 = 4.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
 
     log_process             = False
@@ -98,8 +96,8 @@ def main():
     zeta                    = 1.0               
 
     test_sf                 = [4]               # set scale factor, default: [2, 3, 4], [2], [3], [4]
-    inIter                  = 4                 # iter num for sr solution: 4-6
-    gamma                   = 8/100             # coef for iterative sr solver 20steps: 0.05-0.10 for zeta=1, 0.09-0.13 for zeta=0 
+    inIter                  = 6                 # iter num for sr solution: 4-6
+    gamma                   = 6/100             # coef for iterative sr solver 20steps: 0.05-0.10 for zeta=1, 0.09-0.13 for zeta=0 
     classical_degradation   = False             # set classical degradation or bicubic degradation
     task_current            = 'sr'              # 'sr' for super resolution
     n_channels              = 3                 # fixed
@@ -148,42 +146,19 @@ def main():
     # load model
     # ----------------------------------------
 
-    def create_argparser():
-        defaults = dict(
-            clip_denoised=True,
-            num_samples=1,
-            batch_size=1,
-            use_ddim=False,
+    model_config = dict(
             model_path=model_path,
-            diffusion_steps=num_train_timesteps,
-            noise_schedule='linear',
-            num_head_channels=64,
-            resblock_updown=True,
-            use_fp16=False,
-            use_scale_shift_norm=True,
-            num_heads=4,
-            num_heads_upsample=-1,
-            use_new_attention_order=False,
-            timestep_respacing="",
-            use_kl=False,
-            predict_xstart=False,
-            rescale_timesteps=False,
-            rescale_learned_sigmas=False,
-            channel_mult="",
-            learn_sigma=True,
-            class_cond=False,
-            use_checkpoint=False,
-            image_size=256,
             num_channels=128,
             num_res_blocks=1,
             attention_resolutions="16",
-            dropout=0.1,
+        ) if model_name == 'diffusion_ffhq_10m' \
+        else dict(
+            model_path=model_path,
+            num_channels=256,
+            num_res_blocks=2,
+            attention_resolutions="8,16,32",
         )
-        # defaults.update(model_and_diffusion_defaults())
-        parser = argparse.ArgumentParser()
-        add_dict_to_argparser(parser, defaults)
-        return parser
-    args = create_argparser().parse_args([])
+    args = utils_model.create_argparser(model_config).parse_args([])
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys()))
     model.load_state_dict(
@@ -197,6 +172,8 @@ def main():
     logger.info('model_name:{}, sr_mode:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, sr_mode, noise_level_img, noise_level_model))
     logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, skipstep analytic steps:{}'.format(eta, zeta, lambda_, noise_model_t))
     logger.info('start step:{}, skip_type:{}, skip interval:{}'.format(t_start, skip_type, skip))
+    logger.info('analytic iter num:{}, gamma:{}'.format(inIter, gamma))
+    
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
@@ -269,7 +246,6 @@ def main():
                         if img_L.ndim == 3:
                             img_L = np.transpose(img_L, (1, 2, 0))
 
-
                     np.random.seed(seed=0)  # for reproducibility
                     img_L = img_L * 2 - 1
                     img_L += np.random.normal(0, noise_level_img * 2, img_L.shape) # add AWGN
@@ -301,13 +277,10 @@ def main():
                         x = sr.shift_pixel(x, sf)
                     x = util.single2tensor4(x).to(device)
 
-                    y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
+                    y = util.single2tensor4(img_L).to(device)   #(1,3,256,256) [-1,1]
 
-                    t_y = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_level_img)
-                    sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
-                    x = sqrt_alpha_effective * x + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
-                            sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(x)
-                    # x = torch.randn_like(x)    
+                    # x = torch.randn_like(x)
+                    x = sqrt_alphas_cumprod[t_start] * (2*x-1) + sqrt_1m_alphas_cumprod[t_start] * torch.randn_like(x)
 
                     k_tensor = util.single2tensor4(np.expand_dims(k, 2)).to(device) 
 
@@ -473,36 +446,40 @@ def main():
                         img_H_y = util.rgb2ycbcr(img_H, only_y=True)
                         psnr_y = util.calculate_psnr(img_E_y, img_H_y, border=border)
                         test_results['psnr_y'].append(psnr_y)
-                        
-                return test_results
+                    
+                # --------------------------------
+                # Average PSNR and LPIPS for all images
+                # --------------------------------
 
+                ave_psnr_k = sum(test_results['psnr']) / len(test_results['psnr'])
+                logger.info('------> Average PSNR(RGB) of ({}) scale factor: ({}), kernel: ({}) sigma: ({:.3f}): {:.4f} dB'.format(testset_name, sf, k_index, noise_level_model, ave_psnr_k))
+                test_results_ave['psnr_sf_k'].append(ave_psnr_k)
+
+                if n_channels == 3:  # RGB image
+                    ave_psnr_y_k = sum(test_results['psnr_y']) / len(test_results['psnr_y'])
+                    logger.info('------> Average PSNR(Y) of ({}) scale factor: ({}), kernel: ({}) sigma: ({:.3f}): {:.4f} dB'.format(testset_name, sf, k_index, noise_level_model, ave_psnr_y_k))
+                    test_results_ave['psnr_y_sf_k'].append(ave_psnr_y_k)
+
+                if calc_LPIPS:
+                    ave_lpips_k = sum(test_results['lpips']) / len(test_results['lpips'])
+                    logger.info('------> Average LPIPS of ({}) scale factor: ({}), kernel: ({}) sigma: ({:.3f}): {:.4f}'.format(testset_name, sf, k_index, noise_level_model, ave_lpips_k))
+                    test_results_ave['lpips'].append(ave_lpips_k)    
+                return test_results_ave
 
             # experiments
             lambdas = [lambda_*i for i in range(1,2)]
             for lambda_ in lambdas:
-                test_results = test_rho(lambda_, model_output_type=model_output_type)
+                test_results_ave = test_rho(lambda_, model_output_type=model_output_type)
 
-
-            # --------------------------------
-            # Average PSNR for all kernels
-            # --------------------------------
-
-            ave_psnr_k = sum(test_results['psnr']) / len(test_results['psnr'])
-            logger.info('------> Average PSNR(RGB) of ({}) scale factor: ({}), kernel: ({}) sigma: ({:.3f}): {:.4f} dB'.format(testset_name, sf, k_index, noise_level_model, ave_psnr_k))
-            test_results_ave['psnr_sf_k'].append(ave_psnr_k)
-
-            if n_channels == 3:  # RGB image
-                ave_psnr_y_k = sum(test_results['psnr_y']) / len(test_results['psnr_y'])
-                logger.info('------> Average PSNR(Y) of ({}) scale factor: ({}), kernel: ({}) sigma: ({:.3f}): {:.4f} dB'.format(testset_name, sf, k_index, noise_level_model, ave_psnr_y_k))
-                test_results_ave['psnr_y_sf_k'].append(ave_psnr_y_k)
-
-            if calc_LPIPS:
-                ave_lpips_k = sum(test_results['lpips']) / len(test_results['lpips'])
-                logger.info('------> Average LPIPS of ({}) scale factor: ({}), kernel: ({}) sigma: ({:.3f}): {:.4f}'.format(testset_name, sf, k_index, noise_level_model, ave_lpips_k))
-                test_results_ave['lpips'].append(ave_lpips_k)
+            
+            #for gamma in [i/500 for i in range(20,30)]:
+                #for inIter in [j for j in range(5,8)]:
+                    #for lambda_ in lambdas:
+                        #test_results = test_rho(lambda_, model_output_type=model_output_type, inIter=inIter, gamma=gamma)
+                            
 
     # ---------------------------------------
-    # Average PSNR for all sf and kernels
+    # Average PSNR and LPIPS for all sf and kernels
     # ---------------------------------------
 
     ave_psnr_sf_k = sum(test_results_ave['psnr_sf_k']) / len(test_results_ave['psnr_sf_k'])
