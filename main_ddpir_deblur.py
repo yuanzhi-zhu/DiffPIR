@@ -25,34 +25,6 @@ from guided_diffusion.script_util import (
     args_to_dict,
 )
 
-
-"""
-Spyder (Python 3.7)
-PyTorch 1.6.0
-Windows 10 or Linux
-Kai Zhang (cskaizhang@gmail.com)
-github: https://github.com/cszn/DPIR
-        https://github.com/cszn/IRCNN
-        https://github.com/cszn/KAIR
-@article{zhang2020plug,
-  title={Plug-and-Play Image Restoration with Deep Denoiser Prior},
-  author={Zhang, Kai and Li, Yawei and Zuo, Wangmeng and Zhang, Lei and Van Gool, Luc and Timofte, Radu},
-  journal={arXiv preprint},
-  year={2020}
-}
-% If you have any question, please feel free to contact with me.
-% Kai Zhang (e-mail: cskaizhang@gmail.com; homepage: https://cszn.github.io/)
-by Kai Zhang (01/August/2020)
-
-# --------------------------------------------
-|--model_zoo               # model_zoo
-   |--drunet_gray          # model_name, for color images
-   |--drunet_color
-|--testset                 # testsets
-|--results                 # results
-# --------------------------------------------
-"""
-
 def main():
 
     # ----------------------------------------
@@ -129,6 +101,7 @@ def main():
         if blur_mode == 'Gaussian':
             kernel = GaussialBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
         elif blur_mode == 'motion':
+            np.random.seed(seed=0)  # for reproducibility of motion kernel
             kernel = MotionBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
         k_tensor = kernel.get_kernel().to(device, dtype=torch.float)
         k = k_tensor.clone().detach().cpu().numpy()       #[0,1]
@@ -194,7 +167,6 @@ def main():
         import lpips
         loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
         test_results['lpips'] = []
-
 
     def test_rho(lambda_=lambda_, model_output_type=model_output_type):
         for idx, img in enumerate(L_paths):

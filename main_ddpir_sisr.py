@@ -25,42 +25,6 @@ from guided_diffusion.script_util import (
     args_to_dict,
 )
 
-from datetime import datetime
-
-"""
-Spyder (Python 3.7)
-PyTorch 1.6.0
-Windows 10 or Linux
-Kai Zhang (cskaizhang@gmail.com)
-github: https://github.com/cszn/DPIR
-        https://github.com/cszn/IRCNN
-        https://github.com/cszn/KAIR
-@article{zhang2020plug,
-  title={Plug-and-Play Image Restoration with Deep Denoiser Prior},
-  author={Zhang, Kai and Li, Yawei and Zuo, Wangmeng and Zhang, Lei and Van Gool, Luc and Timofte, Radu},
-  journal={arXiv preprint},
-  year={2020}
-}
-% If you have any question, please feel free to contact with me.
-% Kai Zhang (e-mail: cskaizhang@gmail.com; homepage: https://cszn.github.io/)
-by Kai Zhang (01/August/2020)
-
-# --------------------------------------------
-|--model_zoo               # model_zoo
-   |--drunet_color         # model_name, for color images
-   |--drunet_gray
-|--testset                 # testsets
-|--results                 # results
-# --------------------------------------------
-
-
-How to run:
-step 1: download [drunet_gray.pth, drunet_color.pth, ircnn_gray.pth, ircnn_color.pth] from https://drive.google.com/drive/folders/13kfr3qny7S2xwG9h7v95F5mkWs0OmU0D
-step 2: set your own testset 'testset_name' and parameter setting such as 'noise_level_img', 'iter_num'. 
-step 3: 'python main_dpir_sisr.py'
-
-"""
-
 def main():
 
     # ----------------------------------------
