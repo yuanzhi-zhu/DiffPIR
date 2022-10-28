@@ -58,6 +58,7 @@ def main():
     skip_type               = 'quad'         # uniform, quad
     eta                     = 1.                # eta for ddim sampling
     zeta                    = 1.0               
+    guidance_scale          = 1.0   
 
     test_sf                 = [4]               # set scale factor, default: [2, 3, 4], [2], [3], [4]
     inIter                  = 6                 # iter num for sr solution: 4-6
@@ -134,10 +135,9 @@ def main():
     model = model.to(device)
 
     logger.info('model_name:{}, sr_mode:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, sr_mode, noise_level_img, noise_level_model))
-    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, skipstep analytic steps:{}'.format(eta, zeta, lambda_, noise_model_t))
-    logger.info('start step:{}, skip_type:{}, skip interval:{}'.format(t_start, skip_type, skip))
+    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, guidance_scale:{:.2f} '.format(eta, zeta, lambda_, guidance_scale))
+    logger.info('start step:{}, skip_type:{}, skip interval:{}, skipstep analytic steps:{}'.format(t_start, skip_type, skip, noise_model_t))
     logger.info('analytic iter num:{}, gamma:{}'.format(inIter, gamma))
-    
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
@@ -164,13 +164,6 @@ def main():
 
         for k_index in range(k_num):
             logger.info('--------- sf:{:>1d} --k:{:>2d} ---------'.format(sf, k_index))
-            test_results = OrderedDict()
-            test_results['psnr'] = []
-            test_results['psnr_y'] = []
-            if calc_LPIPS:
-                import lpips
-                loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
-                test_results['lpips'] = []
 
             if not classical_degradation:  # for bicubic degradation
                 k_index = sf-2
@@ -178,7 +171,14 @@ def main():
 
             util.surf(k) if show_img else None
 
-            def test_rho(lambda_=lambda_, model_output_type=model_output_type):
+            def test_rho(lambda_=lambda_, model_output_type=model_output_type): 
+                test_results = OrderedDict()
+                test_results['psnr'] = []
+                test_results['psnr_y'] = []
+                if calc_LPIPS:
+                    import lpips
+                    loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
+                    test_results['lpips'] = []
                 for idx, img in enumerate(L_paths):
                     model_out_type = model_output_type
 
@@ -300,9 +300,11 @@ def main():
                                         if i < num_train_timesteps-noise_model_t: 
                                             if sr_mode == 'blur':
                                                 tau = rhos[t_i].float().repeat(1, 1, 1, 1)
-                                                x0 = x0 / 2 + 0.5
-                                                x0 = sr.data_solution(x0.float(), FB, FBC, F2B, FBFy, tau, sf)
-                                                x0 = x0 * 2 - 1
+                                                x0_p = x0 / 2 + 0.5
+                                                x0_p = sr.data_solution(x0_p.float(), FB, FBC, F2B, FBFy, tau, sf)
+                                                x0_p = x0_p * 2 - 1
+                                                # effective x0
+                                                x0 = x0 + guidance_scale * (x0_p-x0)
                                             elif sr_mode == 'cubic': 
                                                 # iterative back-projection (IBP) solution
                                                 for _ in range(inIter):
@@ -357,17 +359,20 @@ def main():
                     # --------------------------------
 
                     img_E = util.tensor2uint(x_0)
+
+                    psnr = util.calculate_psnr(img_E, img_H, border=border)
+                    test_results['psnr'].append(psnr)
                     
                     if calc_LPIPS:
                         img_H_tensor = np.transpose(img_H, (2, 0, 1))
                         img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(device)
                         img_H_tensor = img_H_tensor / 255 * 2 -1
                         lpips_score = loss_fn_vgg(x_0.detach()*2-1, img_H_tensor)
-                        test_results['lpips'].append(lpips_score.cpu().detach().numpy()[0][0][0][0])
-
-                    psnr = util.calculate_psnr(img_E, img_H, border=border)
-                    test_results['psnr'].append(psnr)
-                    logger.info('{:->4d}--> {:>10s} -- sf:{:>1d} --k:{:>2d} PSNR: {:.2f}dB'.format(idx+1, img_name+ext, sf, k_index, psnr))
+                        lpips_score = lpips_score.cpu().detach().numpy()[0][0][0][0]
+                        test_results['lpips'].append(lpips_score)
+                        logger.info('{:->4d}--> {:>10s} -- sf:{:>1d} --k:{:>2d} PSNR: {:.4f}dB LPIPS: {:.4f}'.format(idx+1, img_name+ext, sf, k_index, psnr, lpips_score))
+                    else:
+                        logger.info('{:->4d}--> {:>10s} -- sf:{:>1d} --k:{:>2d} PSNR: {:.4f}dB'.format(idx+1, img_name+ext, sf, k_index, psnr))
 
                     if save_E:
                         util.imsave(img_E, os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_'+model_name+'.png'))

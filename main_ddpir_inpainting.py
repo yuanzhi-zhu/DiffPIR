@@ -46,7 +46,8 @@ def main():
     lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
     eta                     = 1.0                # eta for ddim samplingn  
-    zeta                    = 1.0               
+    zeta                    = 1.0                      
+    guidance_scale          = 1.0   
     
     model_out_type          = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
     generate_mode           = 'DDPIR'           # repaint; vanilla; DDPIR
@@ -132,13 +133,13 @@ def main():
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
 
-    test_results = OrderedDict()
-    if calc_LPIPS:
-        import lpips
-        loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
-        test_results['lpips'] = []
-
     def test_rho(lambda_=lambda_):
+        test_results = OrderedDict()
+        if calc_LPIPS:
+            import lpips
+            loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
+            test_results['lpips'] = []
+
         for idx, img in enumerate(L_paths):
 
             # --------------------------------
@@ -235,7 +236,8 @@ def main():
                             if model_out_type == 'pred_xstart':
                                 # when noise level less than given image noise, skip
                                 if i < num_train_timesteps-noise_model_t:    
-                                    x0 = (mask*y + rhos[t_i].float()*x0).div(mask+rhos[t_i])
+                                    x0_p = (mask*y + rhos[t_i].float()*x0).div(mask+rhos[t_i])
+                                    x0 = x0 + guidance_scale * (x0_p-x0)
                                 else:
                                     pass
                             elif model_out_type == 'pred_x_prev':
@@ -330,20 +332,20 @@ def main():
             # test with the first image in the path
             break
 
+        # --------------------------------
+        # Average LPIPS
+        # --------------------------------
+
+        if calc_LPIPS:
+            ave_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
+            logger.info('------> Average LPIPS of ({}), sigma: ({:.2f}): {:.2f}'.format(testset_name, noise_level_model, ave_lpips))
+
+
 
     # experiments
     lambdas = [lambda_*i for i in range(1,2)]
     for lambda_ in lambdas:
         test_rho(lambda_)
-
-    # --------------------------------
-    # Average LPIPS
-    # --------------------------------
-
-    if calc_LPIPS:
-        ave_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
-        logger.info('------> Average LPIPS of ({}), sigma: ({:.2f}): {:.2f}'.format(testset_name, noise_level_model, ave_lpips))
-
 
 if __name__ == '__main__':
 

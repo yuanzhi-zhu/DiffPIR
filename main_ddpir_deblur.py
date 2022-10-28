@@ -56,7 +56,8 @@ def main():
     model_output_type       = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
     skip_type               = 'quad'         # uniform, quad
     eta                     = 1.0               # eta for ddim sampling
-    zeta                    = 1.0     
+    zeta                    = 1.0  
+    guidance_scale          = 1.0   
 
     calc_LPIPS              = True
     use_DIY_kernel          = True
@@ -154,21 +155,21 @@ def main():
     model = model.to(device)
 
     logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
-    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, skipstep analytic steps:{}'.format(eta, zeta, lambda_, noise_model_t))
-    logger.info('start step:{}, skip_type:{}, skip interval:{}'.format(t_start, skip_type, skip))
+    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, guidance_scale:{:.2f} '.format(eta, zeta, lambda_, guidance_scale))
+    logger.info('start step:{}, skip_type:{}, skip interval:{}, skipstep analytic steps:{}'.format(t_start, skip_type, skip, noise_model_t))
     logger.info('use_DIY_kernel:{}, blur mode:{}'.format(use_DIY_kernel, blur_mode))
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
     
-    test_results = OrderedDict()
-    test_results['psnr'] = []
-    if calc_LPIPS:
-        import lpips
-        loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
-        test_results['lpips'] = []
-
     def test_rho(lambda_=lambda_, model_output_type=model_output_type):
+        test_results = OrderedDict()
+        test_results['psnr'] = []
+        if calc_LPIPS:
+            import lpips
+            loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
+            test_results['lpips'] = []
+
         for idx, img in enumerate(L_paths):
             model_out_type = model_output_type
 
@@ -269,10 +270,12 @@ def main():
                             if model_out_type == 'pred_xstart':
                                 tau = rhos[t_i].float().repeat(1, 1, 1, 1)
                                 # when noise level less than given image noise, skip
-                                if i < num_train_timesteps-noise_model_t:   
-                                    x0 = x0 / 2 + 0.5
-                                    x0 = sr.data_solution(x0.float(), FB, FBC, F2B, FBFy, tau, sf)
-                                    x0 = x0 * 2 - 1
+                                if i < num_train_timesteps-noise_model_t: 
+                                    x0_p = x0 / 2 + 0.5
+                                    x0_p = sr.data_solution(x0_p.float(), FB, FBC, F2B, FBFy, tau, sf)
+                                    x0_p = x0_p * 2 - 1
+                                    # effective x0
+                                    x0 = x0 + guidance_scale * (x0_p-x0)
                                 else:
                                     model_out_type = 'pred_x_prev'
                                     x0 = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type=model_out_type, \
@@ -323,16 +326,19 @@ def main():
 
             img_E = util.tensor2uint(x_0)
                 
+            psnr = util.calculate_psnr(img_E, img_H, border=border)  # change with your own border
+            test_results['psnr'].append(psnr)
+            
             if calc_LPIPS:
                 img_H_tensor = np.transpose(img_H, (2, 0, 1))
                 img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(device)
                 img_H_tensor = img_H_tensor / 255 * 2 -1
                 lpips_score = loss_fn_vgg(x_0.detach()*2-1, img_H_tensor)
-                test_results['lpips'].append(lpips_score.cpu().detach().numpy()[0][0][0][0])
-
-            psnr = util.calculate_psnr(img_E, img_H, border=border)  # change with your own border
-            test_results['psnr'].append(psnr)
-            logger.info('{:->4d}--> {:>10s} PSNR: {:.2f}dB'.format(idx+1, img_name+ext, psnr))
+                lpips_score = lpips_score.cpu().detach().numpy()[0][0][0][0]
+                test_results['lpips'].append(lpips_score)
+                logger.info('{:->4d}--> {:>10s} PSNR: {:.4f}dB LPIPS: {:.4f}'.format(idx+1, img_name+ext, psnr, lpips_score))
+            else:
+                logger.info('{:->4d}--> {:>10s} PSNR: {:.4f}dB LPIPS: {:.4f}'.format(idx+1, img_name+ext, psnr))
 
             if n_channels == 1:
                 img_H = img_H.squeeze()
