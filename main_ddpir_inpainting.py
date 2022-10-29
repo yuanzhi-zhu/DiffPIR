@@ -61,7 +61,7 @@ def main():
     model_zoo               = os.path.join(cwd, 'model_zoo')    # fixed
     testsets                = os.path.join(cwd, 'testsets')     # fixed
     results                 = os.path.join(cwd, 'results')      # fixed
-    result_name             = f'{testset_name}_{task_current}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_zeta{zeta}'
+    result_name             = f'{testset_name}_{task_current}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_eta{eta}_zeta{zeta}'
     model_path              = os.path.join(model_zoo, model_name+'.pt')
     device                  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
@@ -133,11 +133,13 @@ def main():
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
 
+    if calc_LPIPS:
+        import lpips
+        loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
+
     def test_rho(lambda_=lambda_):
         test_results = OrderedDict()
         if calc_LPIPS:
-            import lpips
-            loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
             test_results['lpips'] = []
 
         for idx, img in enumerate(L_paths):
@@ -339,8 +341,6 @@ def main():
         if calc_LPIPS:
             ave_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
             logger.info('------> Average LPIPS of ({}), sigma: ({:.2f}): {:.2f}'.format(testset_name, noise_level_model, ave_lpips))
-
-
 
     # experiments
     lambdas = [lambda_*i for i in range(1,2)]

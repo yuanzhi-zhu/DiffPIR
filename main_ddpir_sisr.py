@@ -70,7 +70,7 @@ def main():
     model_zoo               = os.path.join(cwd, 'model_zoo')    # fixed
     testsets                = os.path.join(cwd, 'testsets')     # fixed
     results                 = os.path.join(cwd, 'results')      # fixed
-    result_name             = f'{testset_name}_{task_current}_{sr_mode}{str(test_sf)}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_zeta{zeta}_lambda{lambda_}'
+    result_name             = f'{testset_name}_{task_current}_{sr_mode}{str(test_sf)}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_eta{eta}_zeta{zeta}_lambda{lambda_}'
     model_path              = os.path.join(model_zoo, model_name+'.pt')
     device                  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
@@ -156,6 +156,8 @@ def main():
     test_results_ave['psnr_sf_k'] = []
     test_results_ave['psnr_y_sf_k'] = []
     if calc_LPIPS:
+        import lpips
+        loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
         test_results_ave['lpips'] = []
 
     for sf in test_sf:
@@ -176,8 +178,6 @@ def main():
                 test_results['psnr'] = []
                 test_results['psnr_y'] = []
                 if calc_LPIPS:
-                    import lpips
-                    loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
                     test_results['lpips'] = []
                 for idx, img in enumerate(L_paths):
                     model_out_type = model_output_type
