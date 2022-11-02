@@ -46,7 +46,6 @@ def main():
     save_E                  = False             # save estimated image
     save_LEH                = False             # save zoomed LR, E and H images
     save_progressive        = True              # save generation process
-    border                  = 0
 
     sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
     lambda_                 = 4.                # key parameter lambda
@@ -78,7 +77,7 @@ def main():
     calc_LPIPS              = True
 
     # noise schedule 
-    beta_start              = 0.002 / 1000
+    beta_start              = 0.1 / 1000
     beta_end                = 20 / 1000
     betas                   = np.linspace(beta_start, beta_end, num_train_timesteps, dtype=np.float32)
     betas                   = torch.from_numpy(betas).to(device)
@@ -174,6 +173,7 @@ def main():
             util.surf(k) if show_img else None
 
             def test_rho(lambda_=lambda_, model_output_type=model_output_type): 
+                logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, inIter:{:.3f}, gamma:{:.3f}, guidance_scale:{:.2f}'.format(eta, zeta, lambda_, inIter, gamma, guidance_scale))
                 test_results = OrderedDict()
                 test_results['psnr'] = []
                 test_results['psnr_y'] = []
@@ -241,7 +241,7 @@ def main():
                         x = sr.shift_pixel(x, sf)
                     x = util.single2tensor4(x).to(device)
 
-                    y = util.single2tensor4(img_L).to(device)   #(1,3,256,256) [-1,1]
+                    y = util.single2tensor4(img_L).to(device)   #(1,3,256,256) [0,1]
 
                     # x = torch.randn_like(x)
                     x = sqrt_alphas_cumprod[t_start] * (2*x-1) + sqrt_1m_alphas_cumprod[t_start] * torch.randn_like(x)
@@ -337,7 +337,10 @@ def main():
                                 
                             # set back to x_t from x_{t-1}
                             if u < iter_num_U-1 and seq[i] != seq[-1]:
-                                x = torch.sqrt(alphas[t_i]) * x + torch.sqrt(betas[t_i]) * torch.randn_like(x)
+                                # x = torch.sqrt(alphas[t_i]) * x + torch.sqrt(betas[t_i]) * torch.randn_like(x)
+                                sqrt_alpha_effective = sqrt_alphas_cumprod[t_i] / sqrt_alphas_cumprod[t_im1]
+                                x = sqrt_alpha_effective * x + torch.sqrt(sqrt_1m_alphas_cumprod[t_i]**2 - \
+                                        sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_im1]**2) * torch.randn_like(x)
                                     
 
                         # save the process

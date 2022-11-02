@@ -10,6 +10,7 @@ from collections import OrderedDict
 from utils import utils_model
 from utils import utils_logger
 from utils import utils_image as util
+from utils.utils_inpaint import mask_generator
 
 from guided_diffusion import dist_util
 from guided_diffusion.script_util import (
@@ -25,13 +26,13 @@ def main():
     # Preparation
     # ----------------------------------------
 
-    noise_level_img         = 0/255.0           # set AWGN noise level for LR image, default: 0
+    noise_level_img         = 12.75/255.0           # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
-    model_name              = 'diffusion_celeba256_250000'  # diffusion_celeba256_250000, diffusion_ffhq_10m; set diffusino model
-    testset_name            = 'gts/face'        # set testing set, 'ffhq_val'
+    model_name              = 'diffusion_ffhq_10m'  # diffusion_celeba256_250000, diffusion_ffhq_10m; set diffusino model
+    testset_name            = 'set0'        # set testing set, 'imagenet_val' | 'ffhq_val'
     mask_name               = 'gt_keep_masks/face/000000.png'
     num_train_timesteps     = 1000
-    iter_num                = 1000              # set number of iterations, default: 40 for demosaicing
+    iter_num                = 20              # set number of iterations, default: 40 for demosaicing
     iter_num_U              = 1                 # set number of inner iterations, default: 1
     skip                    = num_train_timesteps//iter_num     # skip interval
 
@@ -45,13 +46,13 @@ def main():
     sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
     lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
-    eta                     = 1.0                # eta for ddim samplingn  
+    eta                     = 0.0                # eta for ddim samplingn  
     zeta                    = 1.0                      
     guidance_scale          = 1.0   
     
     model_out_type          = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
     generate_mode           = 'DDPIR'           # repaint; vanilla; DDPIR
-    skip_type               = 'uniform'         # uniform, quad
+    skip_type               = 'quad'         # uniform, quad
     ddim_sample             = False             # sampling method
     
     log_process             = False
@@ -66,10 +67,10 @@ def main():
     device                  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
 
-    calc_LPIPS              = False
+    calc_LPIPS              = True
     
     # noise schedule 
-    beta_start              = 0.002 / 1000
+    beta_start              = 0.1 / 1000
     beta_end                = 20 / 1000
     betas                   = np.linspace(beta_start, beta_end, num_train_timesteps, dtype=np.float32)
     betas                   = torch.from_numpy(betas).to(device)
@@ -84,7 +85,12 @@ def main():
 
     noise_inti_img          = 50 / 255
     t_start                 = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_inti_img) # start timestep of the diffusion process
-    t_start                 = 999   
+    t_start                 = num_train_timesteps - 1    
+
+    load_mask               = False
+    mask_type               = 'random'  #['box', 'random', 'both', 'extreme']
+    mask_len_range          = [128, 129]
+    mask_prob_range         = [0.3, 0.7]
 
     # ----------------------------------------
     # L_path, E_path, H_path, mask_path
@@ -127,8 +133,8 @@ def main():
     model = model.to(device)
 
     logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
-    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, skipstep analytic steps:{}'.format(eta, zeta, lambda_, noise_model_t))
-    logger.info('start step:{}, skip_type:{}, skip interval:{}'.format(t_start, skip_type, skip))
+    logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, guidance_scale:{:.2f} '.format(eta, zeta, lambda_, guidance_scale))
+    logger.info('start step:{}, skip_type:{}, skip interval:{}, skipstep analytic steps:{}'.format(t_start, skip_type, skip, noise_model_t))
     logger.info('Model path: {:s}'.format(model_path))
     logger.info(L_path)
     L_paths = util.get_image_paths(L_path)
@@ -137,8 +143,11 @@ def main():
         import lpips
         loss_fn_vgg = lpips.LPIPS(net='vgg').to(device)
 
-    def test_rho(lambda_=lambda_):
+    def test_rho(lambda_=lambda_,model_out_type_=model_out_type,zeta=zeta):
+        model_out_type = model_out_type_
+        logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, guidance_scale:{:.2f}'.format(eta, zeta, lambda_, guidance_scale))
         test_results = OrderedDict()
+        test_results['psnr'] = []
         if calc_LPIPS:
             test_results['lpips'] = []
 
@@ -155,16 +164,26 @@ def main():
             # --------------------------------
             # (2) initialize x
             # --------------------------------
+            if load_mask:
+                mask = util.imread_uint(mask_path, n_channels=n_channels).astype(bool)
+            else:
+                mask_gen = mask_generator(mask_type=mask_type, mask_len_range=mask_len_range, mask_prob_range=mask_prob_range)
+                np.random.seed(seed=0)  # for reproducibility
+                mask = mask_gen(util.uint2tensor4(img_H)).numpy()
+                mask = np.squeeze(mask)
+                mask = np.transpose(mask, (1, 2, 0))
+                
+            img_L = img_H * mask  / 255.   #(256,256,3)
 
-            mask = util.imread_uint(mask_path, n_channels=n_channels).astype(bool)
+            np.random.seed(seed=0)  # for reproducibility
+            img_L = img_L * 2 - 1
+            img_L += np.random.normal(0, noise_level_img * 2, img_L.shape) # add AWGN
+            img_L = img_L / 2 + 0.5
 
-            img_L = img_H * mask    #(256,256,3)
-            y = util.uint2tensor4(img_L).to(device)   #(1,3,256,256)
+            y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
             y = y * 2 -1        # [-1,1]
-
             mask = util.single2tensor4(mask.astype(np.float32)).to(device) 
-
-            # x = torch.randn_like(y)
+            
             x = sqrt_alphas_cumprod[t_start] * y + sqrt_1m_alphas_cumprod[t_start] * torch.randn_like(y)   
 
             # --------------------------------
@@ -232,7 +251,7 @@ def main():
                     # --------------------------------
 
                     # analytic solution
-                    if generate_mode == 'DDPIR': 
+                    if (generate_mode == 'DDPIR') and not (seq[i] == seq[-1]): 
                         # solve sub-problem
                         if sub_1_analytic:
                             if model_out_type == 'pred_xstart':
@@ -241,6 +260,9 @@ def main():
                                     x0_p = (mask*y + rhos[t_i].float()*x0).div(mask+rhos[t_i])
                                     x0 = x0 + guidance_scale * (x0_p-x0)
                                 else:
+                                    model_out_type = 'pred_x_prev'
+                                    x0 = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type=model_out_type, \
+                                        model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
                                     pass
                             elif model_out_type == 'pred_x_prev':
                                 # when noise level less than given image noise, skip
@@ -265,7 +287,10 @@ def main():
                         
                     # set back to x_t from x_{t-1}
                     if u < iter_num_U-1 and seq[i] != seq[-1]:
-                        x = torch.sqrt(alphas[t_i]) * x + torch.sqrt(betas[t_i]) * torch.randn_like(x)
+                        # x = torch.sqrt(alphas[t_i]) * x + torch.sqrt(betas[t_i]) * torch.randn_like(x)
+                        sqrt_alpha_effective = sqrt_alphas_cumprod[t_i] / sqrt_alphas_cumprod[t_im1]
+                        x = sqrt_alpha_effective * x + torch.sqrt(sqrt_1m_alphas_cumprod[t_i]**2 - \
+                                sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_im1]**2) * torch.randn_like(x)
 
                 # save the process
                 x_0 = (x/2+0.5)
@@ -288,23 +313,31 @@ def main():
             # (4) save process
             # --------------------------------
             
-            img_E = util.tensor2uint(x)
+            img_E = util.tensor2uint(x_0)
+                
+            psnr = util.calculate_psnr(img_E, img_H, border=0)  # change with your own border
+            test_results['psnr'].append(psnr)
                     
             if calc_LPIPS:
                 img_H_tensor = np.transpose(img_H, (2, 0, 1))
                 img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(device)
                 img_H_tensor = img_H_tensor / 255 * 2 -1
                 lpips_score = loss_fn_vgg(x_0.detach()*2-1, img_H_tensor)
-                test_results['lpips'].append(lpips_score.cpu().detach().numpy()[0][0][0][0])
+                lpips_score = lpips_score.cpu().detach().numpy()[0][0][0][0]
+                test_results['lpips'].append(lpips_score)
+                #logger.info('{:->4d}--> {:>10s} PSNR: {:.4f}dB LPIPS: {:.4f}'.format(idx+1, img_name+ext, psnr, lpips_score))
+            else:
+                #logger.info('{:->4d}--> {:>10s} PSNR: {:.4f}dB'.format(idx+1, img_name+ext, psnr))
+                pass
 
             if save_E:
                 util.imsave(img_E, os.path.join(E_path, img_name+'_'+model_name+'.png'))
 
             if save_L:
-                util.imsave(img_L, os.path.join(E_path, img_name+'_L.png'))
+                util.imsave(util.single2uint(img_L), os.path.join(E_path, img_name+'_L.png'))
 
             if save_LEH:
-                util.imsave(np.concatenate([img_L, img_E, img_H], axis=1), os.path.join(E_path, img_name+model_name+'_LEH.png'))
+                util.imsave(np.concatenate([util.single2uint(img_L), img_E, img_H], axis=1), os.path.join(E_path, img_name+model_name+'_LEH.png'))
 
             if save_progressive:
                 now = datetime.now()
@@ -329,23 +362,25 @@ def main():
                         util.imshow(img_total,figsize=(80,4))
                     if save_progressive_mask:
                         util.imsave(img_total*255., os.path.join(E_path, img_name+'_process_mask_lambda_{:.3f}_{}.png'.format(lambda_,current_time)))
-            logger.info('inpainting complete!')
-
-            # test with the first image in the path
-            break
+            #logger.info('inpainting complete!')
 
         # --------------------------------
-        # Average LPIPS
+        # Average PSNR and LPIPS
         # --------------------------------
+
+        ave_psnr = sum(test_results['psnr']) / len(test_results['psnr'])
+        logger.info('------> Average PSNR of ({}), sigma: ({:.3f}): {:.4f} dB'.format(testset_name, noise_level_model, ave_psnr))
 
         if calc_LPIPS:
             ave_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
-            logger.info('------> Average LPIPS of ({}), sigma: ({:.2f}): {:.2f}'.format(testset_name, noise_level_model, ave_lpips))
+            logger.info('------> Average LPIPS of ({}), sigma: ({:.3f}): {:.4f}'.format(testset_name, noise_level_model, ave_lpips))
 
     # experiments
-    lambdas = [lambda_*i for i in range(1,2)]
+    lambdas = [lambda_*i for i in range(20,30)]
     for lambda_ in lambdas:
-        test_rho(lambda_)
+        for zeta_i in [0,0.3,0.8,0.9,1.0]:
+        #for zeta_i in [1]:
+            test_rho(lambda_, zeta=zeta_i)
 
 if __name__ == '__main__':
 
