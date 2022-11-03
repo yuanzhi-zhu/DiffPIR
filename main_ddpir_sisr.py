@@ -373,7 +373,7 @@ def main():
                         lpips_score = loss_fn_vgg(x_0.detach()*2-1, img_H_tensor)
                         lpips_score = lpips_score.cpu().detach().numpy()[0][0][0][0]
                         test_results['lpips'].append(lpips_score)
-                        logger.info('{:->4d}--> {:>10s} -- sf:{:>1d} --k:{:>2d} PSNR: {:.4f}dB LPIPS: {:.4f}'.format(idx+1, img_name+ext, sf, k_index, psnr, lpips_score))
+                        logger.info('{:->4d}--> {:>10s} -- sf:{:>1d} --k:{:>2d} PSNR: {:.4f}dB LPIPS: {:.4f} ave LPIPS: {:.4f}'.format(idx+1, img_name+ext, sf, k_index, psnr, lpips_score, sum(test_results['lpips']) / len(test_results['lpips'])))
                     else:
                         logger.info('{:->4d}--> {:>10s} -- sf:{:>1d} --k:{:>2d} PSNR: {:.4f}dB'.format(idx+1, img_name+ext, sf, k_index, psnr))
 

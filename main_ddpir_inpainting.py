@@ -28,13 +28,18 @@ def main():
 
     noise_level_img         = 12.75/255.0           # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
-    model_name              = 'diffusion_ffhq_10m'  # diffusion_celeba256_250000, diffusion_ffhq_10m; set diffusino model
-    testset_name            = 'set0'        # set testing set, 'imagenet_val' | 'ffhq_val'
-    mask_name               = 'gt_keep_masks/face/000000.png'
+    model_name              = 'diffusion_ffhq_10m'  # 256x256_diffusion_uncond, diffusion_ffhq_10m; set diffusino model
+    testset_name            = 'ffhq_val'        # set testing set, 'imagenet_val' | 'ffhq_val'
     num_train_timesteps     = 1000
     iter_num                = 20              # set number of iterations, default: 40 for demosaicing
     iter_num_U              = 1                 # set number of inner iterations, default: 1
     skip                    = num_train_timesteps//iter_num     # skip interval
+
+    mask_name               = 'gt_keep_masks/face/000000.png'
+    load_mask               = False
+    mask_type               = 'random'  #['box', 'random', 'both', 'extreme']
+    mask_len_range          = [128, 129]
+    mask_prob_range         = [0.5, 0.5]
 
     show_img                = False             # default: False
     save_L                  = False             # save LR image
@@ -62,7 +67,7 @@ def main():
     model_zoo               = os.path.join(cwd, 'model_zoo')    # fixed
     testsets                = os.path.join(cwd, 'testsets')     # fixed
     results                 = os.path.join(cwd, 'results')      # fixed
-    result_name             = f'{testset_name}_{task_current}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_eta{eta}_zeta{zeta}'
+    result_name             = f'{testset_name}_{task_current}_{mask_type}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_eta{eta}_zeta{zeta}_lambda{lambda_}'
     model_path              = os.path.join(model_zoo, model_name+'.pt')
     device                  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
@@ -86,11 +91,6 @@ def main():
     noise_inti_img          = 50 / 255
     t_start                 = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_inti_img) # start timestep of the diffusion process
     t_start                 = num_train_timesteps - 1    
-
-    load_mask               = False
-    mask_type               = 'random'  #['box', 'random', 'both', 'extreme']
-    mask_len_range          = [128, 129]
-    mask_prob_range         = [0.3, 0.7]
 
     # ----------------------------------------
     # L_path, E_path, H_path, mask_path
@@ -132,7 +132,7 @@ def main():
         v.requires_grad = False
     model = model.to(device)
 
-    logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
+    logger.info('model_name:{}, mask_type:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, mask_type, noise_level_img, noise_level_model))
     logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, guidance_scale:{:.2f} '.format(eta, zeta, lambda_, guidance_scale))
     logger.info('start step:{}, skip_type:{}, skip interval:{}, skipstep analytic steps:{}'.format(t_start, skip_type, skip, noise_model_t))
     logger.info('Model path: {:s}'.format(model_path))
@@ -179,12 +179,18 @@ def main():
             img_L = img_L * 2 - 1
             img_L += np.random.normal(0, noise_level_img * 2, img_L.shape) # add AWGN
             img_L = img_L / 2 + 0.5
+            img_L = img_L * mask
 
             y = util.single2tensor4(img_L).to(device)   #(1,3,256,256)
             y = y * 2 -1        # [-1,1]
             mask = util.single2tensor4(mask.astype(np.float32)).to(device) 
             
-            x = sqrt_alphas_cumprod[t_start] * y + sqrt_1m_alphas_cumprod[t_start] * torch.randn_like(y)   
+            # for y with given noise level, add noise from t_y
+            t_y = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_level_img)
+            sqrt_alpha_effective = sqrt_alphas_cumprod[t_start] / sqrt_alphas_cumprod[t_y]
+            x = sqrt_alpha_effective * y + torch.sqrt(sqrt_1m_alphas_cumprod[t_start]**2 - \
+                    sqrt_alpha_effective**2 * sqrt_1m_alphas_cumprod[t_y]**2) * torch.randn_like(y)
+            # x = sqrt_alphas_cumprod[t_start] * y + sqrt_1m_alphas_cumprod[t_start] * torch.randn_like(y)   
 
             # --------------------------------
             # (3) get rhos and sigmas
@@ -325,9 +331,9 @@ def main():
                 lpips_score = loss_fn_vgg(x_0.detach()*2-1, img_H_tensor)
                 lpips_score = lpips_score.cpu().detach().numpy()[0][0][0][0]
                 test_results['lpips'].append(lpips_score)
-                #logger.info('{:->4d}--> {:>10s} PSNR: {:.4f}dB LPIPS: {:.4f}'.format(idx+1, img_name+ext, psnr, lpips_score))
+                logger.info('{:->4d}--> {:>10s} PSNR: {:.4f}dB LPIPS: {:.4f} ave LPIPS: {:.4f}'.format(idx, img_name+ext, psnr, lpips_score, sum(test_results['lpips']) / len(test_results['lpips'])))
             else:
-                #logger.info('{:->4d}--> {:>10s} PSNR: {:.4f}dB'.format(idx+1, img_name+ext, psnr))
+                logger.info('{:->4d}--> {:>10s} PSNR: {:.4f}dB'.format(idx, img_name+ext, psnr))
                 pass
 
             if save_E:
@@ -376,10 +382,10 @@ def main():
             logger.info('------> Average LPIPS of ({}), sigma: ({:.3f}): {:.4f}'.format(testset_name, noise_level_model, ave_lpips))
 
     # experiments
-    lambdas = [lambda_*i for i in range(20,30)]
+    lambdas = [lambda_*i for i in range(1,2)]
     for lambda_ in lambdas:
-        for zeta_i in [0,0.3,0.8,0.9,1.0]:
-        #for zeta_i in [1]:
+        #for zeta_i in [0,0.3,0.8,0.9,1.0]:
+        for zeta_i in [zeta*i for i in range(1,2)]:
             test_rho(lambda_, zeta=zeta_i)
 
 if __name__ == '__main__':
