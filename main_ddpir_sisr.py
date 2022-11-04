@@ -34,12 +34,12 @@ def main():
     noise_level_img         = 12.75/255.0       # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
     model_name              = '256x256_diffusion_uncond'  # diffusion_ffhq_10m, 256x256_diffusion_uncond; set diffusino model
-    testset_name            = 'set5'            # set testing set,  'imagenet_val' | 'ffhq_val'
+    testset_name            = 'imagenet_val'    # set testing set,  'imagenet_val' | 'ffhq_val'
     num_train_timesteps     = 1000
-    iter_num                = 20              # set number of sampling iterations, default: 1000 for demosaicing
+    iter_num                = 20                # set number of sampling iterations
     iter_num_U              = 1                 # set number of inner iterations, default: 1
     skip                    = num_train_timesteps//iter_num     # skip interval
-    sr_mode                 = 'cubic'            # 'blur', 'cubic' mode of sr up/down sampling
+    sr_mode                 = 'blur'            # 'blur', 'cubic' mode of sr up/down sampling
 
     show_img                = False             # default: False
     save_L                  = True              # save LR image
@@ -54,7 +54,7 @@ def main():
     log_process             = False
     ddim_sample             = False             # sampling method
     model_output_type       = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
-    skip_type               = 'quad'         # uniform, quad
+    skip_type               = 'quad'            # uniform, quad
     eta                     = 1.                # eta for ddim sampling
     zeta                    = 1.0               
     guidance_scale          = 1.0   
@@ -442,13 +442,6 @@ def main():
             lambdas = [lambda_*i for i in range(1,2)]
             for lambda_ in lambdas:
                 test_results_ave = test_rho(lambda_, model_output_type=model_output_type)
-
-            
-            #for gamma in [i/500 for i in range(20,30)]:
-                #for inIter in [j for j in range(5,8)]:
-                    #for lambda_ in lambdas:
-                        #test_results = test_rho(lambda_, model_output_type=model_output_type, inIter=inIter, gamma=gamma)
-                            
 
     # ---------------------------------------
     # Average PSNR and LPIPS for all sf and kernels

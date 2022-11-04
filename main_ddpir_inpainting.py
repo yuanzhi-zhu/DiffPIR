@@ -26,16 +26,16 @@ def main():
     # Preparation
     # ----------------------------------------
 
-    noise_level_img         = 12.75/255.0           # set AWGN noise level for LR image, default: 0
+    noise_level_img         = 0/255.0           # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
     model_name              = 'diffusion_ffhq_10m'  # 256x256_diffusion_uncond, diffusion_ffhq_10m; set diffusino model
     testset_name            = 'ffhq_val'        # set testing set, 'imagenet_val' | 'ffhq_val'
     num_train_timesteps     = 1000
-    iter_num                = 20              # set number of iterations, default: 40 for demosaicing
+    iter_num                = 20              # set number of iterations
     iter_num_U              = 1                 # set number of inner iterations, default: 1
     skip                    = num_train_timesteps//iter_num     # skip interval
 
-    mask_name               = 'gt_keep_masks/face/000000.png'
+    mask_name               = 'gt_keep_masks/face/000000.png'   # mask path for loading mask img
     load_mask               = False
     mask_type               = 'random'  #['box', 'random', 'both', 'extreme']
     mask_len_range          = [128, 129]
@@ -43,21 +43,21 @@ def main():
 
     show_img                = False             # default: False
     save_L                  = False             # save LR image
-    save_E                  = False             # save estimated image
+    save_E                  = True              # save estimated image
     save_LEH                = False             # save zoomed LR, E and H images
-    save_progressive        = True              # save generation process
+    save_progressive        = False             # save generation process
     save_progressive_mask   = False             # save generation process
 
     sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
     lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
-    eta                     = 0.0                # eta for ddim samplingn  
+    eta                     = 0.0               # eta for ddim samplingn  
     zeta                    = 1.0                      
     guidance_scale          = 1.0   
     
     model_out_type          = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
     generate_mode           = 'DDPIR'           # repaint; vanilla; DDPIR
-    skip_type               = 'quad'         # uniform, quad
+    skip_type               = 'quad'            # uniform, quad
     ddim_sample             = False             # sampling method
     
     log_process             = False
@@ -173,7 +173,7 @@ def main():
                 mask = np.squeeze(mask)
                 mask = np.transpose(mask, (1, 2, 0))
                 
-            img_L = img_H * mask  / 255.   #(256,256,3)
+            img_L = img_H * mask  / 255.   #(256,256,3)         [0,1]
 
             np.random.seed(seed=0)  # for reproducibility
             img_L = img_L * 2 - 1
@@ -368,7 +368,6 @@ def main():
                         util.imshow(img_total,figsize=(80,4))
                     if save_progressive_mask:
                         util.imsave(img_total*255., os.path.join(E_path, img_name+'_process_mask_lambda_{:.3f}_{}.png'.format(lambda_,current_time)))
-            #logger.info('inpainting complete!')
 
         # --------------------------------
         # Average PSNR and LPIPS

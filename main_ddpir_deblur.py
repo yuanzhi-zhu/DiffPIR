@@ -14,7 +14,6 @@ from utils import utils_model
 from utils import utils_logger
 from utils import utils_sisr as sr
 from utils import utils_image as util
-
 from utils.utils_deblur import MotionBlurOperator, GaussialBlurOperator
 
 from guided_diffusion import dist_util
@@ -32,36 +31,36 @@ def main():
     # ----------------------------------------
 
     noise_level_img         = 12.75/255.0           # set AWGN noise level for LR image, default: 0
-    noise_level_model       = noise_level_img   # set noise level of model, default: 0
+    noise_level_model       = noise_level_img       # set noise level of model, default: 0
     model_name              = 'diffusion_ffhq_10m'  # diffusion_ffhq_10m, 256x256_diffusion_uncond; set diffusino model
-    testset_name            = 'set5'            # set testing set,  'imagenet_val' | 'ffhq_val'
+    testset_name            = 'ffhq_val'            # set testing set,  'imagenet_val' | 'ffhq_val'
     num_train_timesteps     = 1000
-    iter_num                = 20              # set number of iterations, default: 40 for demosaicing
+    iter_num                = 20                # set number of iterations
     iter_num_U              = 1                 # set number of inner iterations, default: 1
     skip                    = num_train_timesteps//iter_num     # skip interval
 
     show_img                = False             # default: False
-    save_L                  = True             # save LR image
-    save_E                  = False             # save estimated image
+    save_L                  = False             # save LR image
+    save_E                  = True              # save estimated image
     save_LEH                = False             # save zoomed LR, E and H images
-    save_progressive        = True              # save generation process
+    save_progressive        = False             # save generation process
     border                  = 0
 	
     sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
-    lambda_                 = 4.5                # key parameter lambda
+    lambda_                 = 4.5               # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
     
     log_process             = False
     ddim_sample             = False             # sampling method
     model_output_type       = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
-    skip_type               = 'quad'         # uniform, quad
+    skip_type               = 'quad'            # uniform, quad
     eta                     = 1.0               # eta for ddim sampling
     zeta                    = 1.0  
     guidance_scale          = 1.0   
 
     calc_LPIPS              = True
     use_DIY_kernel          = True
-    blur_mode               = 'motion'                          # Gaussian; motion      
+    blur_mode               = 'motion'          # Gaussian; motion      
     kernel_size             = 61
     kernel_std              = 3.0 if blur_mode == 'Gaussian' else 0.5
 
