@@ -56,7 +56,7 @@ def main():
     guidance_scale          = 1.0   
     
     model_out_type          = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
-    generate_mode           = 'DDPIR'           # repaint; vanilla; DDPIR
+    generate_mode           = 'DiffPIR'           # repaint; vanilla; DiffPIR
     skip_type               = 'quad'            # uniform, quad
     ddim_sample             = False             # sampling method
     
@@ -67,7 +67,7 @@ def main():
     model_zoo               = os.path.join(cwd, 'model_zoo')    # fixed
     testsets                = os.path.join(cwd, 'testsets')     # fixed
     results                 = os.path.join(cwd, 'results')      # fixed
-    result_name             = f'{testset_name}_{task_current}_{mask_type}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_eta{eta}_zeta{zeta}_lambda{lambda_}'
+    result_name             = f'{testset_name}_{task_current}_{generate_mode}_{mask_type}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_eta{eta}_zeta{zeta}_lambda{lambda_}'
     model_path              = os.path.join(model_zoo, model_name+'.pt')
     device                  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
@@ -257,7 +257,7 @@ def main():
                     # --------------------------------
 
                     # analytic solution
-                    if (generate_mode == 'DDPIR') and not (seq[i] == seq[-1]): 
+                    if (generate_mode == 'DiffPIR') and not (seq[i] == seq[-1]): 
                         # solve sub-problem
                         if sub_1_analytic:
                             if model_out_type == 'pred_xstart':
@@ -312,7 +312,7 @@ def main():
                         util.imshow(x_show)
 
             # recover conditional part
-            if generate_mode in ['repaint','DDPIR']:
+            if generate_mode in ['repaint','DiffPIR']:
                 x[mask.to(torch.bool)] = y[mask.to(torch.bool)]
 
             # --------------------------------
@@ -348,7 +348,7 @@ def main():
             if save_progressive:
                 now = datetime.now()
                 current_time = now.strftime("%Y_%m_%d_%H_%M_%S")
-                if generate_mode in ['repaint','DDPIR']:
+                if generate_mode in ['repaint','DiffPIR']:
                     mask = np.squeeze(mask.cpu().numpy())
                     if mask.ndim == 3:
                         mask = np.transpose(mask, (1, 2, 0))
@@ -360,7 +360,7 @@ def main():
                 y_t = np.squeeze((y/2+0.5).cpu().numpy())
                 if y_t.ndim == 3:
                     y_t = np.transpose(y_t, (1, 2, 0))
-                if generate_mode in ['repaint','DDPIR']:
+                if generate_mode in ['repaint','DiffPIR']:
                     for x in progress_img:
                         images.append((y_t)* mask+ (1-mask) * x)
                     img_total = cv2.hconcat(images)

@@ -33,10 +33,10 @@ def main():
 
     noise_level_img         = 12.75/255.0       # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
-    model_name              = '256x256_diffusion_uncond'  # diffusion_ffhq_10m, 256x256_diffusion_uncond; set diffusino model
-    testset_name            = 'imagenet_val'    # set testing set,  'imagenet_val' | 'ffhq_val'
+    model_name              = 'diffusion_ffhq_10m'  # diffusion_ffhq_10m, 256x256_diffusion_uncond; set diffusino model
+    testset_name            = 'ffhq_val'    # set testing set,  'imagenet_val' | 'ffhq_val'
     num_train_timesteps     = 1000
-    iter_num                = 20                # set number of sampling iterations
+    iter_num                = 100                # set number of sampling iterations
     iter_num_U              = 1                 # set number of inner iterations, default: 1
     skip                    = num_train_timesteps//iter_num     # skip interval
     sr_mode                 = 'blur'            # 'blur', 'cubic' mode of sr up/down sampling
@@ -48,20 +48,21 @@ def main():
     save_progressive        = True              # save generation process
 
     sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
-    lambda_                 = 4.                # key parameter lambda
+    lambda_                 = 1.                # key parameter lambda
     sub_1_analytic          = True              # use analytical solution
 
     log_process             = False
     ddim_sample             = False             # sampling method
     model_output_type       = 'pred_xstart'     # model output type: pred_x_prev; pred_xstart; epsilon; score
+    generate_mode           = 'DiffPIR'         # DiffPIR; DPS; vanilla
     skip_type               = 'quad'            # uniform, quad
-    eta                     = 1.                # eta for ddim sampling
-    zeta                    = 1.0               
+    eta                     = 0.                # eta for ddim sampling
+    zeta                    = 0.1               
     guidance_scale          = 1.0   
 
     test_sf                 = [4]               # set scale factor, default: [2, 3, 4], [2], [3], [4]
-    inIter                  = 6                 # iter num for sr solution: 4-6
-    gamma                   = 6/100             # coef for iterative sr solver 20steps: 0.05-0.10 for zeta=1, 0.09-0.13 for zeta=0 
+    inIter                  = 1                 # iter num for sr solution: 4-6
+    gamma                   = 1/100             # coef for iterative sr solver 20steps: 0.05-0.10 for zeta=1, 0.09-0.13 for zeta=0 
     classical_degradation   = False             # set classical degradation or bicubic degradation
     task_current            = 'sr'              # 'sr' for super resolution
     n_channels              = 3                 # fixed
@@ -69,7 +70,7 @@ def main():
     model_zoo               = os.path.join(cwd, 'model_zoo')    # fixed
     testsets                = os.path.join(cwd, 'testsets')     # fixed
     results                 = os.path.join(cwd, 'results')      # fixed
-    result_name             = f'{testset_name}_{task_current}_{sr_mode}{str(test_sf)}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_eta{eta}_zeta{zeta}_lambda{lambda_}'
+    result_name             = f'{testset_name}_{task_current}_{generate_mode}_{sr_mode}{str(test_sf)}_{model_name}_sigma{noise_level_img}_NFE{iter_num}_eta{eta}_zeta{zeta}_lambda{lambda_}'
     model_path              = os.path.join(model_zoo, model_name+'.pt')
     device                  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
@@ -129,8 +130,8 @@ def main():
         dist_util.load_state_dict(args.model_path, map_location="cpu")
     )
     model.eval()
-    for k, v in model.named_parameters():
-        v.requires_grad = False
+    #for k, v in model.named_parameters():
+    #    v.requires_grad = False
     model = model.to(device)
 
     logger.info('model_name:{}, sr_mode:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, sr_mode, noise_level_img, noise_level_model))
@@ -167,12 +168,12 @@ def main():
             logger.info('--------- sf:{:>1d} --k:{:>2d} ---------'.format(sf, k_index))
 
             if not classical_degradation:  # for bicubic degradation
-                k_index = sf-2
+                k_index = sf-2 if sf < 5 else 2
             k = kernels[0, k_index].astype(np.float64)
 
             util.surf(k) if show_img else None
 
-            def test_rho(lambda_=lambda_, model_output_type=model_output_type): 
+            def test_rho(lambda_=lambda_, zeta=zeta, model_output_type=model_output_type): 
                 logger.info('eta:{:.3f}, zeta:{:.3f}, lambda:{:.3f}, inIter:{:.3f}, gamma:{:.3f}, guidance_scale:{:.2f}'.format(eta, zeta, lambda_, inIter, gamma, guidance_scale))
                 test_results = OrderedDict()
                 test_results['psnr'] = []
@@ -224,7 +225,11 @@ def main():
                     rhos = []
                     for i in range(num_train_timesteps):
                         sigmas.append(reduced_alpha_cumprod[num_train_timesteps-1-i])
-                        sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
+                        if model_out_type == 'pred_xstart' and generate_mode == 'DiffPIR':
+                            sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
+                        #elif model_out_type == 'pred_x_prev':
+                        else:
+                            sigma_ks.append(torch.sqrt(betas[i]/alphas[i]))
                         rhos.append(lambda_*(sigma**2)/(sigma_ks[i]**2))
                             
                     rhos, sigmas, sigma_ks = torch.tensor(rhos).to(device), torch.tensor(sigmas).to(device), torch.tensor(sigma_ks).to(device)
@@ -284,8 +289,13 @@ def main():
                             # --------------------------------
 
                             ### solve equation 6b with one reverse diffusion step
-                            x0 = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
-                                    model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
+                            if 'DPS' in generate_mode:
+                                x = x.requires_grad_()
+                                xt, x0 = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type='pred_x_prev_and_start', \
+                                            model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
+                            else:
+                                x0 = utils_model.model_fn(x, noise_level=curr_sigma*255, model_out_type=model_out_type, \
+                                        model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
                             # x0 = utils_model.test_mode(utils_model.model_fn, model, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255, \
                             #       model_out_type=model_out_type, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
 
@@ -294,36 +304,61 @@ def main():
                             # --------------------------------
 
                             if seq[i] != seq[-1]:
-                                if sub_1_analytic:
-                                    if model_out_type == 'pred_xstart':
-                                        # when noise level less than given image noise, skip
-                                        if i < num_train_timesteps-noise_model_t: 
-                                            if sr_mode == 'blur':
-                                                tau = rhos[t_i].float().repeat(1, 1, 1, 1)
-                                                x0_p = x0 / 2 + 0.5
-                                                x0_p = sr.data_solution(x0_p.float(), FB, FBC, F2B, FBFy, tau, sf)
-                                                x0_p = x0_p * 2 - 1
-                                                # effective x0
-                                                x0 = x0 + guidance_scale * (x0_p-x0)
-                                            elif sr_mode == 'cubic': 
-                                                # iterative back-projection (IBP) solution
-                                                for _ in range(inIter):
-                                                    x0 = x0 / 2 + 0.5
-                                                    x0 = x0 + gamma * up_sample((y - down_sample(x0))) # / (1+rhos[t_i])
-                                                    x0 = x0 * 2 - 1
-                                        else:
-                                            model_out_type = 'pred_x_prev'
-                                            x0 = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
-                                                    model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
-                                            # x0 = utils_model.test_mode(utils_model.model_fn, model, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255, \
-                                            #       model_out_type=model_out_type, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
-                                            pass
-                                else:
-                                    # TODO: first order solver
-                                    pass
+                                if generate_mode == 'DiffPIR':
+                                    if sub_1_analytic:
+                                        if model_out_type == 'pred_xstart':
+                                            # when noise level less than given image noise, skip
+                                            if i < num_train_timesteps-noise_model_t: 
+                                                if sr_mode == 'blur':
+                                                    tau = rhos[t_i].float().repeat(1, 1, 1, 1)
+                                                    x0_p = x0 / 2 + 0.5
+                                                    x0_p = sr.data_solution(x0_p.float(), FB, FBC, F2B, FBFy, tau, sf)
+                                                    x0_p = x0_p * 2 - 1
+                                                    # effective x0
+                                                    x0 = x0 + guidance_scale * (x0_p-x0)
+                                                elif sr_mode == 'cubic': 
+                                                    # iterative back-projection (IBP) solution
+                                                    for _ in range(inIter):
+                                                        x0 = x0 / 2 + 0.5
+                                                        x0 = x0 + gamma * up_sample((y - down_sample(x0))) / (1+rhos[t_i])
+                                                        x0 = x0 * 2 - 1
+                                            else:
+                                                model_out_type = 'pred_x_prev'
+                                                x0 = utils_model.model_fn(x, noise_level=curr_sigma*255,model_out_type=model_out_type, \
+                                                        model_diffusion=model, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
+                                                # x0 = utils_model.test_mode(utils_model.model_fn, model, x, mode=2, refield=32, min_size=256, modulo=16, noise_level=curr_sigma*255, \
+                                                #       model_out_type=model_out_type, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
+                                                pass
+                                    else:
+                                        # zeta=0.25; lambda_=15
+                                        x0 = x0.requires_grad_()
+                                        # first order solver
+                                        down_sample = Resizer(x.shape, 1/sf).to(device)
+                                        #norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=x0/2+0.5, x_hat=x0, measurement=y)
+                                        norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=x0, x_hat=x0, measurement=2*y-1)
+                                                            
+                                        x0 = x0 - norm_grad * norm / (rhos[t_i]) 
+                                        x0 = x0.detach_()
+                                        pass                          
+                                elif 'DPS' in generate_mode:
+                                    down_sample = Resizer(x.shape, 1/sf).to(device)                        
+                                    if generate_mode == 'DPS_y0':
+                                        norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=x, x_hat=x0, measurement=2*y-1)
+                                        #norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=xt, x_hat=x0, measurement=2*y-1)                                                                                
+                                        x = xt - norm_grad * 1. #norm / (2*rhos[t_i]) 
+                                        x = x.detach_()
+                                        pass
+                                    elif generate_mode == 'DPS_yt':
+                                        y_t = sqrt_alphas_cumprod[t_i] * (2*y-1) + sqrt_1m_alphas_cumprod[t_i] * torch.randn_like(y) # add AWGN
+                                        #y_t = y_t/2 + 0.5
+                                        #norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=x, x_hat=xt, measurement=y_t)
+                                        norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=xt, x_hat=xt, measurement=y_t)
+                                        x = xt - norm_grad * lambda_ * norm / (rhos[t_i]) * 0.35
+                                        x = x.detach_()
+                                        pass
                                 
                             # add noise back to t=i-1
-                            if (model_out_type == 'pred_xstart') and not (seq[i] == seq[-1] and u == iter_num_U-1):
+                            if (generate_mode == 'DiffPIR' and model_out_type == 'pred_xstart') and not (seq[i] == seq[-1] and u == iter_num_U-1):
                                 #x = sqrt_alphas_cumprod[t_i] * (x0) + (sqrt_1m_alphas_cumprod[t_i]) *  torch.randn_like(x)
                                 
                                 t_im1 = utils_model.find_nearest(reduced_alpha_cumprod,sigmas[seq[i+1]].cpu().numpy())
@@ -333,7 +368,8 @@ def main():
                                 x = sqrt_alphas_cumprod[t_im1] * x0 + np.sqrt(1-zeta) * (torch.sqrt(sqrt_1m_alphas_cumprod[t_im1]**2 - eta_sigma**2) * eps \
                                             + eta_sigma * torch.randn_like(x)) + np.sqrt(zeta) * sqrt_1m_alphas_cumprod[t_im1] * torch.randn_like(x)
                             else:
-                                x = x0
+                                #x = x0
+                                pass
                                 
                             # set back to x_t from x_{t-1}
                             if u < iter_num_U-1 and seq[i] != seq[-1]:
@@ -439,9 +475,11 @@ def main():
                 return test_results_ave
 
             # experiments
-            lambdas = [lambda_*i for i in range(1,2)]
+            lambdas = [lambda_*i for i in range(2,13)]
             for lambda_ in lambdas:
-                test_results_ave = test_rho(lambda_, model_output_type=model_output_type)
+                #for zeta_i in [zeta*i for i in range(2,4)]:
+                for zeta_i in [0.25]:
+                    test_results_ave = test_rho(lambda_, zeta=zeta_i, model_output_type=model_output_type)
 
     # ---------------------------------------
     # Average PSNR and LPIPS for all sf and kernels

@@ -387,6 +387,14 @@ def create_argparser(model_config):
     return parser
 
 
+def grad_and_value(operator, x, x_hat, measurement):
+    difference = measurement - operator(x_hat)
+    norm = torch.linalg.norm(difference)
+    norm_grad = torch.autograd.grad(outputs=norm, inputs=x)[0]
+    return norm_grad,  norm
+
+
+
 if __name__ == '__main__':
 
     class Net(torch.nn.Module):
