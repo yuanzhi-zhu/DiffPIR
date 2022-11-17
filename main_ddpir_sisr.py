@@ -373,6 +373,7 @@ def main():
                                 
                             # set back to x_t from x_{t-1}
                             if u < iter_num_U-1 and seq[i] != seq[-1]:
+                                ### it's equivalent to use x & xt (?), but with xt the computation is faster.
                                 # x = torch.sqrt(alphas[t_i]) * x + torch.sqrt(betas[t_i]) * torch.randn_like(x)
                                 sqrt_alpha_effective = sqrt_alphas_cumprod[t_i] / sqrt_alphas_cumprod[t_im1]
                                 x = sqrt_alpha_effective * x + torch.sqrt(sqrt_1m_alphas_cumprod[t_i]**2 - \

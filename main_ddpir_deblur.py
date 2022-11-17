@@ -99,24 +99,25 @@ def main():
     # --------------------------------
     # load kernel
     # --------------------------------
-    if use_DIY_kernel:
-        if blur_mode == 'Gaussian':
-            kernel = GaussialBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
-        elif blur_mode == 'motion':
-            np.random.seed(seed=0)  # for reproducibility of motion kernel
-            kernel = MotionBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
-        k_tensor = kernel.get_kernel().to(device, dtype=torch.float)
-        k = k_tensor.clone().detach().cpu().numpy()       #[0,1]
-        k = np.squeeze(k)
-        k = np.squeeze(k)
-    else:
-        k_index = 0
-        kernels = hdf5storage.loadmat(os.path.join(cwd, 'kernels', 'Levin09.mat'))['kernels']
-        k = kernels[0, k_index].astype(np.float64)
-    k_4d = torch.from_numpy(k).to(device)
-    k_4d = torch.einsum('ab,cd->abcd',torch.eye(3).to(device),k_4d)
 
-    util.imshow(k) if show_img else None
+    # if use_DIY_kernel:
+    #     if blur_mode == 'Gaussian':
+    #         kernel = GaussialBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
+    #     elif blur_mode == 'motion':
+    #         np.random.seed(seed=0)  # for reproducibility of motion kernel
+    #         kernel = MotionBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
+    #     k_tensor = kernel.get_kernel().to(device, dtype=torch.float)
+    #     k = k_tensor.clone().detach().cpu().numpy()       #[0,1]
+    #     k = np.squeeze(k)
+    #     k = np.squeeze(k)
+    # else:
+    #     k_index = 0
+    #     kernels = hdf5storage.loadmat(os.path.join(cwd, 'kernels', 'Levin09.mat'))['kernels']
+    #     k = kernels[0, k_index].astype(np.float64)
+    # k_4d = torch.from_numpy(k).to(device)
+    # k_4d = torch.einsum('ab,cd->abcd',torch.eye(3).to(device),k_4d)
+
+    # util.imshow(k) if show_img else None
     
     # ----------------------------------------
     # L_path, E_path, H_path
@@ -177,6 +178,25 @@ def main():
             test_results['lpips'] = []
 
         for idx, img in enumerate(L_paths):
+            if use_DIY_kernel:
+                if blur_mode == 'Gaussian':
+                    kernel = GaussialBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
+                elif blur_mode == 'motion':
+                    np.random.seed(seed=idx*10)  # for reproducibility of motion kernel
+                    kernel = MotionBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
+                k_tensor = kernel.get_kernel().to(device, dtype=torch.float)
+                k = k_tensor.clone().detach().cpu().numpy()       #[0,1]
+                k = np.squeeze(k)
+                k = np.squeeze(k)
+            else:
+                k_index = 0
+                kernels = hdf5storage.loadmat(os.path.join(cwd, 'kernels', 'Levin09.mat'))['kernels']
+                k = kernels[0, k_index].astype(np.float64)
+            util.imsave(k*255.*50, os.path.join(E_path, f'motion_kernel_{idx}.png'))
+            #np.save(os.path.join(E_path, 'motion_kernel.npy'), k)
+            k_4d = torch.from_numpy(k).to(device)
+            k_4d = torch.einsum('ab,cd->abcd',torch.eye(3).to(device),k_4d)
+            
             model_out_type = model_output_type
 
             # --------------------------------
@@ -206,9 +226,12 @@ def main():
             rhos = []
             for i in range(num_train_timesteps):
                 sigmas.append(reduced_alpha_cumprod[num_train_timesteps-1-i])
-                sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
-                rhos.append(lambda_*(sigma**2)/(sigma_ks[i]**2))
-                    
+                if model_out_type == 'pred_xstart' and generate_mode == 'DiffPIR':
+                    sigma_ks.append((sqrt_1m_alphas_cumprod[i]/sqrt_alphas_cumprod[i]))
+                #elif model_out_type == 'pred_x_prev':
+                else:
+                    sigma_ks.append(torch.sqrt(betas[i]/alphas[i]))
+                rhos.append(lambda_*(sigma**2)/(sigma_ks[i]**2))    
             rhos, sigmas, sigma_ks = torch.tensor(rhos).to(device), torch.tensor(sigmas).to(device), torch.tensor(sigma_ks).to(device)
             
             # --------------------------------
@@ -296,6 +319,7 @@ def main():
                                         #   model_out_type=model_out_type, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
                                         pass
                             else:
+                                # zeta=0.28; lambda_=7
                                 x0 = x0.requires_grad_()
                                 # first order solver
                                 def Tx(x):
@@ -323,9 +347,10 @@ def main():
                             elif generate_mode == 'DPS_yt':
                                 y_t = sqrt_alphas_cumprod[t_i] * (2*y-1) + sqrt_1m_alphas_cumprod[t_i] * torch.randn_like(y) # add AWGN
                                 y_t = y_t/2 + 0.5
+                                ### it's equivalent to use x & xt (?), but with xt the computation is faster.
                                 #norm_grad, norm = utils_model.grad_and_value(operator=Tx,x=x, x_hat=xt, measurement=y_t)
                                 norm_grad, norm = utils_model.grad_and_value(operator=Tx,x=xt, x_hat=xt, measurement=y_t)
-                                x = xt - norm_grad * 10 #norm / (2*rhos[t_i]) 
+                                x = xt - norm_grad * lambda_ * norm / (rhos[t_i]) * 0.35
                                 x = x.detach_()
                                 pass
 
