@@ -3,19 +3,18 @@ import cv2
 import logging
 
 import numpy as np
+import torch
+import torch.nn.functional as F
 from datetime import datetime
 from collections import OrderedDict
 import hdf5storage
-from functools import partial
-
-import torch
-from torch.nn import functional as F
 
 from utils import utils_model
 from utils import utils_logger
 from utils import utils_sisr as sr
 from utils import utils_image as util
 from utils.utils_resizer import Resizer
+from functools import partial
 
 from guided_diffusion import dist_util
 from guided_diffusion.script_util import (
@@ -130,8 +129,8 @@ def main():
         dist_util.load_state_dict(args.model_path, map_location="cpu")
     )
     model.eval()
-    #for k, v in model.named_parameters():
-    #    v.requires_grad = False
+    for k, v in model.named_parameters():
+        v.requires_grad = False
     model = model.to(device)
 
     logger.info('model_name:{}, sr_mode:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, sr_mode, noise_level_img, noise_level_model))
@@ -330,7 +329,8 @@ def main():
                                                 #       model_out_type=model_out_type, diffusion=diffusion, ddim_sample=ddim_sample, alphas_cumprod=alphas_cumprod)
                                                 pass
                                     else:
-                                        # zeta=0.25; lambda_=15
+                                        # zeta=0.25; lambda_=15: FFHQ
+                                        # zeta=0.35; lambda_=35: ImageNet
                                         x0 = x0.requires_grad_()
                                         # first order solver
                                         down_sample = Resizer(x.shape, 1/sf).to(device)

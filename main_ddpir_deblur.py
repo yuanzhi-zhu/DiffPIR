@@ -3,19 +3,18 @@ import cv2
 import logging
 
 import numpy as np
-from datetime import datetime
-from collections import OrderedDict
-from scipy import ndimage
-import hdf5storage
-
 import torch
 import torch.nn.functional as F
+from datetime import datetime
+from collections import OrderedDict
+import hdf5storage
 
 from utils import utils_model
 from utils import utils_logger
 from utils import utils_sisr as sr
 from utils import utils_image as util
 from utils.utils_deblur import MotionBlurOperator, GaussialBlurOperator
+from scipy import ndimage
 
 from guided_diffusion import dist_util
 from guided_diffusion.script_util import (
@@ -96,28 +95,6 @@ def main():
     t_start                 = utils_model.find_nearest(reduced_alpha_cumprod, 2 * noise_inti_img) # start timestep of the diffusion process
     t_start                 = num_train_timesteps - 1              
 
-    # --------------------------------
-    # load kernel
-    # --------------------------------
-
-    # if use_DIY_kernel:
-    #     if blur_mode == 'Gaussian':
-    #         kernel = GaussialBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
-    #     elif blur_mode == 'motion':
-    #         np.random.seed(seed=0)  # for reproducibility of motion kernel
-    #         kernel = MotionBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
-    #     k_tensor = kernel.get_kernel().to(device, dtype=torch.float)
-    #     k = k_tensor.clone().detach().cpu().numpy()       #[0,1]
-    #     k = np.squeeze(k)
-    #     k = np.squeeze(k)
-    # else:
-    #     k_index = 0
-    #     kernels = hdf5storage.loadmat(os.path.join(cwd, 'kernels', 'Levin09.mat'))['kernels']
-    #     k = kernels[0, k_index].astype(np.float64)
-    # k_4d = torch.from_numpy(k).to(device)
-    # k_4d = torch.einsum('ab,cd->abcd',torch.eye(3).to(device),k_4d)
-
-    # util.imshow(k) if show_img else None
     
     # ----------------------------------------
     # L_path, E_path, H_path
@@ -154,8 +131,8 @@ def main():
         dist_util.load_state_dict(args.model_path, map_location="cpu")
     )
     model.eval()
-    # for _k, v in model.named_parameters():
-    #     v.requires_grad = False
+    for _k, v in model.named_parameters():
+        v.requires_grad = False
     model = model.to(device)
 
     logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
@@ -179,10 +156,11 @@ def main():
 
         for idx, img in enumerate(L_paths):
             if use_DIY_kernel:
+                np.random.seed(seed=idx*10)  # for reproducibility of blur kernel for each image
                 if blur_mode == 'Gaussian':
-                    kernel = GaussialBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
+                    kernel_std_i = kernel_std * np.abs(np.random.rand()*2+1)
+                    kernel = GaussialBlurOperator(kernel_size=kernel_size, intensity=kernel_std_i, device=device)
                 elif blur_mode == 'motion':
-                    np.random.seed(seed=idx*10)  # for reproducibility of motion kernel
                     kernel = MotionBlurOperator(kernel_size=kernel_size, intensity=kernel_std, device=device)
                 k_tensor = kernel.get_kernel().to(device, dtype=torch.float)
                 k = k_tensor.clone().detach().cpu().numpy()       #[0,1]
@@ -192,7 +170,8 @@ def main():
                 k_index = 0
                 kernels = hdf5storage.loadmat(os.path.join(cwd, 'kernels', 'Levin09.mat'))['kernels']
                 k = kernels[0, k_index].astype(np.float64)
-            util.imsave(k*255.*50, os.path.join(E_path, f'motion_kernel_{idx}.png'))
+            img_name, ext = os.path.splitext(os.path.basename(img))
+            util.imsave(k*255.*200, os.path.join(E_path, f'motion_kernel_{img_name}.png'))
             #np.save(os.path.join(E_path, 'motion_kernel.npy'), k)
             k_4d = torch.from_numpy(k).to(device)
             k_4d = torch.einsum('ab,cd->abcd',torch.eye(3).to(device),k_4d)

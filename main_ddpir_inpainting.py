@@ -1,9 +1,9 @@
 import os.path
+import cv2
 import logging
 
-import cv2
-import torch
 import numpy as np
+import torch
 from datetime import datetime
 from collections import OrderedDict
 
