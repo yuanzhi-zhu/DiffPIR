@@ -1,0 +1,14 @@
+opencv-contrib-python==4.7.0.72
+opencv-python==4.7.0.68
+opencv-python-headless==4.7.0.72
+hdf5storage==0.1.19
+blobfile==2.0.1
+matplotlib==3.6.3
+matplotlib-inline==0.1.6
+scipy==1.10.0
+mpi4py==3.1.4
+lpips==0.1.4
+--extra-index-url https://download.pytorch.org/whl/cu117
+torch==1.13.0+cu117
+torchvision==0.14.0+cu117
+torchaudio==0.13.0

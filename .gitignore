@@ -1,0 +1,13 @@
+model_ckpts/
+*.egg-info
+__pycache__
+.ipynb_checkpoints/
+src/
+.vscode/
+scratch/
+slurm_log/
+*.pt
+*.Identifier
+results/
+motionblur/
+DiffPIR_env/

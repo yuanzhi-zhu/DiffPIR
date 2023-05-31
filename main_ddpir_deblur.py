@@ -33,14 +33,14 @@ def main():
     noise_level_img         = 12.75/255.0           # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img       # set noise level of model, default: 0
     model_name              = 'diffusion_ffhq_10m'  # diffusion_ffhq_10m, 256x256_diffusion_uncond; set diffusino model
-    testset_name            = 'ffhq_val'            # set testing set,  'imagenet_val' | 'ffhq_val'
+    testset_name            = 'demo_test'            # set testing set,  'imagenet_val' | 'ffhq_val'
     num_train_timesteps     = 1000
     iter_num                = 100                # set number of iterations
     iter_num_U              = 1                 # set number of inner iterations, default: 1
     skip                    = num_train_timesteps//iter_num     # skip interval
 
     show_img                = False             # default: False
-    save_L                  = False             # save LR image
+    save_L                  = True             # save LR image
     save_E                  = True              # save estimated image
     save_LEH                = False             # save zoomed LR, E and H images
     save_progressive        = False             # save generation process
@@ -48,7 +48,7 @@ def main():
 	
     sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
     lambda_                 = 1.0               # key parameter lambda
-    sub_1_analytic          = False              # use analytical solution
+    sub_1_analytic          = True              # use analytical solution
     
     log_process             = False
     ddim_sample             = False             # sampling method
@@ -68,7 +68,7 @@ def main():
     sf                      = 1
     task_current            = 'deblur'          
     n_channels              = 3                 # fixed
-    cwd                     = '/cluster/work/cvl/jinliang/ckpts_yuazhu/DDPIR/'  
+    cwd                     = ''  
     model_zoo               = os.path.join(cwd, 'model_zoo')    # fixed
     testsets                = os.path.join(cwd, 'testsets')     # fixed
     results                 = os.path.join(cwd, 'results')      # fixed
@@ -169,7 +169,7 @@ def main():
             else:
                 k_index = 0
                 kernels = hdf5storage.loadmat(os.path.join(cwd, 'kernels', 'Levin09.mat'))['kernels']
-                k = kernels[0, k_index].astype(np.float64)
+                k = kernels[0, k_index].astype(np.float32)
             img_name, ext = os.path.splitext(os.path.basename(img))
             util.imsave(k*255.*200, os.path.join(E_path, f'motion_kernel_{img_name}.png'))
             #np.save(os.path.join(E_path, 'motion_kernel.npy'), k)
@@ -187,7 +187,7 @@ def main():
             img_H = util.modcrop(img_H, 8)  # modcrop
 
             # mode='wrap' is important for analytical solution
-            img_L = ndimage.filters.convolve(img_H, np.expand_dims(k, axis=2), mode='wrap')
+            img_L = ndimage.convolve(img_H, np.expand_dims(k, axis=2), mode='wrap')
             util.imshow(img_L) if show_img else None
             img_L = util.uint2single(img_L)
 

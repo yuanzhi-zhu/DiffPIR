@@ -33,7 +33,7 @@ def main():
     noise_level_img         = 12.75/255.0       # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
     model_name              = 'diffusion_ffhq_10m'  # diffusion_ffhq_10m, 256x256_diffusion_uncond; set diffusino model
-    testset_name            = 'ffhq_val'    # set testing set,  'imagenet_val' | 'ffhq_val'
+    testset_name            = 'demo_test'    # set testing set,  'imagenet_val' | 'ffhq_val'
     num_train_timesteps     = 1000
     iter_num                = 100                # set number of sampling iterations
     iter_num_U              = 1                 # set number of inner iterations, default: 1
@@ -65,7 +65,7 @@ def main():
     classical_degradation   = False             # set classical degradation or bicubic degradation
     task_current            = 'sr'              # 'sr' for super resolution
     n_channels              = 3                 # fixed
-    cwd                     = '/cluster/work/cvl/jinliang/ckpts_yuazhu/DDPIR/' 
+    cwd                     = '' 
     model_zoo               = os.path.join(cwd, 'model_zoo')    # fixed
     testsets                = os.path.join(cwd, 'testsets')     # fixed
     results                 = os.path.join(cwd, 'results')      # fixed
@@ -149,7 +149,7 @@ def main():
     if classical_degradation:
         kernels = hdf5storage.loadmat(os.path.join(cwd, 'kernels', 'kernels_12.mat'))['kernels']
     else:
-        kernels = hdf5storage.loadmat(os.path.join(cwd, 'kernels', 'kernel_bicubicx234.mat'))['kernels']
+        kernels = hdf5storage.loadmat(os.path.join(cwd, 'kernels', 'kernels_bicubicx234.mat'))['kernels']
 
     test_results_ave = OrderedDict()
     test_results_ave['psnr_sf_k'] = []
@@ -490,7 +490,7 @@ def main():
     logger.info('------> Average PSNR of ({}) {:.4f} dB'.format(testset_name, ave_psnr_sf_k))
     if n_channels == 3:
         ave_psnr_y_sf_k = sum(test_results_ave['psnr_y_sf_k']) / len(test_results_ave['psnr_y_sf_k'])
-        logger.info('------> Average PSNR of ({}) {:.4f} dB'.format(testset_name, ave_psnr_y_sf_k))
+        logger.info('------> Average PSNR-Y of ({}) {:.4f} dB'.format(testset_name, ave_psnr_y_sf_k))
     if calc_LPIPS:
         ave_lpips_sf_k = sum(test_results_ave['lpips']) / len(test_results_ave['lpips'])
         logger.info('------> Average LPIPS of ({}) {:.4f}'.format(testset_name, ave_lpips_sf_k))
