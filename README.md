@@ -76,10 +76,13 @@ The overall plug and play sampling algorithm can be summarized as follows:
   <img src="figs/algorithm.png" width="600px"/>
 </p>
 
-We have demonstrated, both theoretically and empirically, that DiffPIR is a more systematic and efficient diffusion sampling approach for image restoration.
+In this work we have demonstrated, both theoretically and empirically, that DiffPIR is a more systematic and efficient diffusion sampling approach for image restoration.
 
 ## Results
 ### Quantitative Results
+
+<details>
+  <summary>Click to display/hide quantitative results tables</summary>
 
 | **FFHQ/Method($\sigma=0.05$)** | **NFEs $\downarrow$** | **Deblur (Gaussian)<br>PSNR $\uparrow$** | **Deblur (Gaussian)<br>FID $\downarrow$** | **Deblur (Gaussian)<br>LPIPS $\downarrow$** | **Deblur (motion)<br>PSNR $\uparrow$** | **Deblur (motion)<br>FID $\downarrow$** | **Deblur (motion)<br>LPIPS $\downarrow$** | **SR ($\times 4$)<br>PSNR $\uparrow$** | **SR ($\times 4$)<br>FID $\downarrow$** | **SR ($\times 4$)<br>LPIPS $\downarrow$** |
 | --------------- | ------------------- | ------------------------------ | --------------------------- | ------------------------------ | --------------------------- | --------------------------- | --------------------------- | ------------------------- | ----------------------- | ------------------------ |
@@ -97,7 +100,7 @@ We have demonstrated, both theoretically and empirically, that DiffPIR is a more
 | DPIR [3]          | $>$20               | **23.86**                      | 189.92                      | 0.476                          | 23.60                       | 210.31                      | 0.489                       | **23.99**                 | 204.83                  | 0.475                     |
 
 
-| **FFHQ/Method** | **NFEs $\downarrow$** | **Inpaint (box)<br>FID $\downarrow$** | **Inpaint (box)<br>LPIPS $\downarrow$** | **Inpaint (random)<br>PSNR $\uparrow$** | **Inpaint (random)<br>FID $\downarrow$** | **Inpaint (random)<br>LPIPS $\downarrow$** | **Deblur (Gaussian)<br>PSNR $\uparrow$** | **Deblur (Gaussian)<br>FID $\downarrow$** | **Deblur (Gaussian)<br>LPIPS $\downarrow$** | **Deblur (motion)<br>PSNR $\uparrow$** | **Deblur (motion)<br>FID $\downarrow$** | **Deblur (motion)<br>LPIPS $\downarrow$** | **SR ($\times 4$)<br>PSNR $\uparrow$** | **SR ($\times 4$)<br>FID $\downarrow$** | **SR ($\times 4$)<br>LPIPS $\downarrow$** |
+| **FFHQ/Method($\sigma=0.0$)** | **NFEs $\downarrow$** | **Inpaint (box)<br>FID $\downarrow$** | **Inpaint (box)<br>LPIPS $\downarrow$** | **Inpaint (random)<br>PSNR $\uparrow$** | **Inpaint (random)<br>FID $\downarrow$** | **Inpaint (random)<br>LPIPS $\downarrow$** | **Deblur (Gaussian)<br>PSNR $\uparrow$** | **Deblur (Gaussian)<br>FID $\downarrow$** | **Deblur (Gaussian)<br>LPIPS $\downarrow$** | **Deblur (motion)<br>PSNR $\uparrow$** | **Deblur (motion)<br>FID $\downarrow$** | **Deblur (motion)<br>LPIPS $\downarrow$** | **SR ($\times 4$)<br>PSNR $\uparrow$** | **SR ($\times 4$)<br>FID $\downarrow$** | **SR ($\times 4$)<br>LPIPS $\downarrow$** |
 | --------------- | ------------------- | ------------------------------ | ------------------------------ | ---------------------------- | ----------------------------- | ---------------------------- | --------------------------- | --------------------------- | ------------------------------ | ------------------------- | ----------------------- | ------------------------ | --------------------- | ------------------- | ---------------------- |
 | DiffPIR         | 20                  | 35.72                          | 0.117                         | 34.03                        | 30.81                        | 0.116                       | 30.74                       | 46.64                       | 0.170                         | 37.03                     | 20.11                  | 0.084                     | 29.17                 | 58.02              | 0.187                    |
 | DiffPIR         | 100                 | **25.64**                      | **0.107**                     | **36.17**                    | **13.68**                    | **0.066**                   | **31.00**                   | **39.27**                   | **0.152**                     | 37.53                     | **11.54**             | **0.064**                 | 29.52                 | **47.80**           | **0.174**                |
@@ -109,37 +112,40 @@ We have demonstrated, both theoretically and empirically, that DiffPIR is a more
 >[1]: Chung et al., "Diffusion Posterior Sampling for General Noisy Inverse Problems", 2022\
 >[2]: Kawar et al., "Denoising Diffusion Restoration Models", 2022\
 >[3]: Zhang et al., "Plug-and-play Image Restoration with Deep Denoiser Prior", 2021
+</details>
 
 
 ### Qualitative Results
+<details>
+  <summary>Click to display/hide qualitative results images</summary>
 
-<p align="center">
-  <img src="figs/SR_results.png" width="900px"/>
-</p>
+  <p align="center">
+    <img src="figs/SR_results.png" width="900px"/>
+  </p>
 
-<p align="center">
-  <img src="figs/deblur_results.png" width="900px"/>
-</p>
+  <p align="center">
+    <img src="figs/deblur_results.png" width="900px"/>
+  </p>
 
-<p align="center">
-  <img src="figs/inpainting_results.png" width="900px"/>
-</p>
+  <p align="center">
+    <img src="figs/inpainting_results.png" width="900px"/>
+  </p>
+  
+</details>
 
 
 ## Citation
-
 If you find this repo helpful, please cite:
 
 ```
-
 @inproceedings{zhu2023denoising, % DiffPIR
       title={Denoising Diffusion Models for Plug-and-Play Image Restoration},
       author={Yuanzhi Zhu and Kai Zhang and Jingyun Liang and Jiezhang Cao and Bihan Wen and Radu Timofte and Luc Van Gool},
       booktitle={IEEE Conference on Computer Vision and Pattern Recognition Workshops (NTIRE)},
       year={2023},
 }
-
 ```
+
 
 ## Acknowledgments
 ```This work was partly supported by the ETH Zurich General Fund (OK), the Alexander von Humboldt Foundation and the Huawei Fund.```
