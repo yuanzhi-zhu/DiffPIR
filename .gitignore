@@ -8,6 +8,7 @@ scratch/
 slurm_log/
 *.pt
 *.Identifier
+*.pdf
 results/
 motionblur/
 DiffPIR_env/
