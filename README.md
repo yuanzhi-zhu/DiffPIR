@@ -81,7 +81,7 @@ In our study, we address the optimization problem stated above with an altered s
 \end{align}
 ```
 
-where the data sub-problem is treated as a denoising issue where diffusion models are utilized as denoisers.
+where the data sub-problem is treated as a denoising issue where diffusion models are utilized as generative denoisers.
 
 <p align="center">
   <img src="figs/illustration.png" width="900px"/>
@@ -99,7 +99,7 @@ The overall plug and play sampling algorithm can be summarized as follows:
 ## Results
 ### Quantitative Results
 
-<details>
+<details open>
   <summary>Click to display/hide quantitative results tables</summary>
 
 | **FFHQ/Method($\sigma=0.05$)** | **NFEs $\downarrow$** | **Deblur (Gaussian)<br>PSNR $\uparrow$** | **Deblur (Gaussian)<br>FID $\downarrow$** | **Deblur (Gaussian)<br>LPIPS $\downarrow$** | **Deblur (motion)<br>PSNR $\uparrow$** | **Deblur (motion)<br>FID $\downarrow$** | **Deblur (motion)<br>LPIPS $\downarrow$** | **SR ($\times 4$)<br>PSNR $\uparrow$** | **SR ($\times 4$)<br>FID $\downarrow$** | **SR ($\times 4$)<br>LPIPS $\downarrow$** |
@@ -134,7 +134,7 @@ The overall plug and play sampling algorithm can be summarized as follows:
 
 
 ### Qualitative Results
-<details>
+<details open>
   <summary>Click to display/hide qualitative results images</summary>
 
   <p align="center">
