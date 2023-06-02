@@ -10,7 +10,10 @@ ___________
 **Contents**
 - [Denoising Diffusion Models for Plug-and-Play Image Restoration](#denoising-diffusion-models-for-plug-and-play-image-restoration)
   - [Abstract](#abstract)
-  - [Clone and Install](#clone-and-install)
+  - [Setting UP](#setting-up)
+    - [Clone and Install](#clone-and-install)
+    - [Model Download](#model-download)
+    - [Inference Code](#inference-code)
   - [Brief Introduction](#brief-introduction)
   - [Results](#results)
     - [Quantitative Results](#quantitative-results)
@@ -24,16 +27,31 @@ Plug-and-play Image Restoration (IR) has been widely recognized as a flexible an
 While several other attempts have been made to adopt diffusion models for image restoration, they either fail to achieve satisfactory results or typically require an unacceptable number of Neural Function Evaluations (NFEs) during inference.
 This paper proposes DiffPIR, which integrates the traditional plug-and-play method into the diffusion sampling framework. Compared to plug-and-play IR methods that rely on discriminative Gaussian denoisers, DiffPIR is expected to inherit the generative ability of diffusion models. Experimental results on three representative IR tasks, including super-resolution, image deblurring, and inpainting, demonstrate that DiffPIR achieves state-of-the-art performance on both the FFHQ and ImageNet datasets in terms of reconstruction faithfulness and perceptual quality with no more than 100 NFEs.
 
-## Clone and Install
-```
+
+## Setting UP
+### Clone and Install
+```bash
 git clone https://github.com/yuanzhi-zhu/DiffPIR.git
 cd DiffPIR
 pip install -r requirements.txt
 ```
-
 for motion blur, please download https://github.com/LeviBorodenko/motionblur to the DiffPIR folder.
 
+### Model Download
 links to model checkpoints can be found in [./model_zoo/README.md](https://github.com/yuanzhi-zhu/DiffPIR/blob/main/model_zoo/README.md)
+
+you can also download with:
+```bash
+bash download.sh
+```
+
+### Inference Code
+```python
+python main_ddpir_sisr.py # SR
+python main_ddpir_deblur.py # deblur
+python main_ddpir_inpainting.py # inpainting
+```
+currently the parameters have to be configured inside the python scripts.
 
 ## Brief Introduction
 Upon comparison with several earlier iterative image restoration methods, such as [USRNet](https://github.com/cszn/USRNet), we found that the diffusion sampling framework offers a more systematic approach to solve data sub-problems and prior sub-problems in an iterative plug and play manner.
@@ -76,7 +94,7 @@ The overall plug and play sampling algorithm can be summarized as follows:
   <img src="figs/algorithm.png" width="600px"/>
 </p>
 
-In this work we have demonstrated, both theoretically and empirically, that DiffPIR is a more systematic and efficient diffusion sampling approach for image restoration.
+<!-- In this work we have demonstrated, both theoretically and empirically, that DiffPIR is a more systematic and efficient diffusion sampling approach for image restoration. -->
 
 ## Results
 ### Quantitative Results
