@@ -94,6 +94,8 @@ The overall plug and play sampling algorithm can be summarized as follows:
   <img src="figs/algorithm.png" width="600px"/>
 </p>
 
+For a more comprehensive understanding, feel free to check out the related [paper](https://arxiv.org/pdf/2305.08995.pdf) or [slides](https://yuanzhi-zhu.github.io/documents/slides/diffusion_models_for_pnp_IR.pdf).
+
 <!-- In this work we have demonstrated, both theoretically and empirically, that DiffPIR is a more systematic and efficient diffusion sampling approach for image restoration. -->
 
 ## Results
