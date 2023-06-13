@@ -131,8 +131,10 @@ def main():
         dist_util.load_state_dict(args.model_path, map_location="cpu")
     )
     model.eval()
-    for _k, v in model.named_parameters():
-        v.requires_grad = False
+    if generate_mode != 'DPS_y0':
+        # for DPS_yt, we can avoid backward through the model
+        for k, v in model.named_parameters():
+            v.requires_grad = False
     model = model.to(device)
 
     logger.info('model_name:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, noise_level_img, noise_level_model))
@@ -319,7 +321,7 @@ def main():
                                 #return kernel.forward(x)                         
                             if generate_mode == 'DPS_y0':
                                 norm_grad, norm = utils_model.grad_and_value(operator=Tx,x=x, x_hat=x0, measurement=y)
-                                #norm_grad, norm = utils_model.grad_and_value(operator=Tx,x=xt, x_hat=x0, measurement=y)                                                                                
+                                #norm_grad, norm = utils_model.grad_and_value(operator=Tx,x=xt, x_hat=x0, measurement=y)    # does not work
                                 x = xt - norm_grad * 1. #norm / (2*rhos[t_i]) 
                                 x = x.detach_()
                                 pass

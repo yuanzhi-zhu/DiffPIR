@@ -129,8 +129,10 @@ def main():
         dist_util.load_state_dict(args.model_path, map_location="cpu")
     )
     model.eval()
-    for k, v in model.named_parameters():
-        v.requires_grad = False
+    if generate_mode != 'DPS_y0':
+        # for DPS_yt, we can avoid backward through the model
+        for k, v in model.named_parameters():
+            v.requires_grad = False
     model = model.to(device)
 
     logger.info('model_name:{}, sr_mode:{}, image sigma:{:.3f}, model sigma:{:.3f}'.format(model_name, sr_mode, noise_level_img, noise_level_model))
@@ -344,14 +346,14 @@ def main():
                                     down_sample = Resizer(x.shape, 1/sf).to(device)                        
                                     if generate_mode == 'DPS_y0':
                                         norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=x, x_hat=x0, measurement=2*y-1)
-                                        #norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=xt, x_hat=x0, measurement=2*y-1)                                                                                
+                                        #norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=xt, x_hat=x0, measurement=2*y-1)    # does not work
                                         x = xt - norm_grad * 1. #norm / (2*rhos[t_i]) 
                                         x = x.detach_()
                                         pass
                                     elif generate_mode == 'DPS_yt':
                                         y_t = sqrt_alphas_cumprod[t_i] * (2*y-1) + sqrt_1m_alphas_cumprod[t_i] * torch.randn_like(y) # add AWGN
                                         #y_t = y_t/2 + 0.5
-                                        #norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=x, x_hat=xt, measurement=y_t)
+                                        #norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=x, x_hat=xt, measurement=y_t)    # no need to use
                                         norm_grad, norm = utils_model.grad_and_value(operator=down_sample,x=xt, x_hat=xt, measurement=y_t)
                                         x = xt - norm_grad * lambda_ * norm / (rhos[t_i]) * 0.35
                                         x = x.detach_()
