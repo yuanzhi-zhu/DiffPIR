@@ -10,7 +10,7 @@ ___________
 **Contents**
 - [Denoising Diffusion Models for Plug-and-Play Image Restoration](#denoising-diffusion-models-for-plug-and-play-image-restoration)
   - [Abstract](#abstract)
-  - [Setting UP](#setting-up)
+  - [Setting Up](#setting-up)
     - [Clone and Install](#clone-and-install)
     - [Model Download](#model-download)
     - [Inference Code](#inference-code)
@@ -28,7 +28,7 @@ While several other attempts have been made to adopt diffusion models for image 
 This paper proposes DiffPIR, which integrates the traditional plug-and-play method into the diffusion sampling framework. Compared to plug-and-play IR methods that rely on discriminative Gaussian denoisers, DiffPIR is expected to inherit the generative ability of diffusion models. Experimental results on three representative IR tasks, including super-resolution, image deblurring, and inpainting, demonstrate that DiffPIR achieves state-of-the-art performance on both the FFHQ and ImageNet datasets in terms of reconstruction faithfulness and perceptual quality with no more than 100 NFEs.
 
 
-## Setting UP
+## Setting Up
 ### Clone and Install
 ```bash
 git clone https://github.com/yuanzhi-zhu/DiffPIR.git
@@ -85,9 +85,10 @@ where the data sub-problem is treated as a denoising issue where diffusion model
 
 <p align="center">
   <img src="figs/illustration.png" width="900px"/>
+  <em>Figure 1. Illustration of our plug-and-play sampling method.</em>
 </p>
 
-To detail further, at every timestep $t$, we initially estimate $\mathbf{x}^{(t)}\_0$ from $\mathbf{x}_{t}$ through denoising, using the off-the-shelf unconditional pre-trained diffusion models. Following this, we address the data sub-problem to acquire an updated $\mathbf{\hat x}^{(t)}_0$ (indicated by the red line). 
+To detail further, as demonstrated in Figure 1, at every timestep $t$, we initially estimate $\mathbf{x}^{(t)}\_0$ from $\mathbf{x}_{t}$ through denoising, using the off-the-shelf unconditional pre-trained diffusion models. Following this, we address the data sub-problem to acquire an updated $\mathbf{\hat x}^{(t)}_0$ (indicated by the red line). 
 
 The overall plug and play sampling algorithm can be summarized as follows:
 <p align="center">
@@ -157,7 +158,7 @@ For a more comprehensive understanding, feel free to check out the related [pape
 ## Citation
 If you find this repo helpful, please cite:
 
-```
+```bibtex
 @inproceedings{zhu2023denoising, % DiffPIR
       title={Denoising Diffusion Models for Plug-and-Play Image Restoration},
       author={Yuanzhi Zhu and Kai Zhang and Jingyun Liang and Jiezhang Cao and Bihan Wen and Radu Timofte and Luc Van Gool},
