@@ -337,13 +337,13 @@ def main():
                 pass
 
             if save_E:
-                util.imsave(img_E, os.path.join(E_path, img_name+'_'+model_name+'.png'))
+                util.imsave(img_E, os.path.join(E_path, img_name+'_'+model_name+ext))
 
             if save_L:
-                util.imsave(util.single2uint(img_L), os.path.join(E_path, img_name+'_L.png'))
+                util.imsave(util.single2uint(img_L), os.path.join(E_path, img_name+'_L'+ext))
 
             if save_LEH:
-                util.imsave(np.concatenate([util.single2uint(img_L), img_E, img_H], axis=1), os.path.join(E_path, img_name+model_name+'_LEH.png'))
+                util.imsave(np.concatenate([util.single2uint(img_L), img_E, img_H], axis=1), os.path.join(E_path, img_name+model_name+'_LEH'+ext))
 
             if save_progressive:
                 now = datetime.now()
@@ -355,7 +355,7 @@ def main():
                 img_total = cv2.hconcat(progress_img)
                 if show_img:
                     util.imshow(img_total,figsize=(80,4))
-                util.imsave(img_total*255., os.path.join(E_path, img_name+'_process_lambda_{:.3f}_{}.png'.format(lambda_,current_time)))
+                util.imsave(img_total*255., os.path.join(E_path, img_name+'_process_lambda_{:.3f}_{}{}'.format(lambda_,current_time,ext)))
                 images = []
                 y_t = np.squeeze((y/2+0.5).cpu().numpy())
                 if y_t.ndim == 3:
@@ -367,7 +367,7 @@ def main():
                     if show_img:
                         util.imshow(img_total,figsize=(80,4))
                     if save_progressive_mask:
-                        util.imsave(img_total*255., os.path.join(E_path, img_name+'_process_mask_lambda_{:.3f}_{}.png'.format(lambda_,current_time)))
+                        util.imsave(img_total*255., os.path.join(E_path, img_name+'_process_mask_lambda_{:.3f}_{}{}'.format(lambda_,current_time,ext)))
 
         # --------------------------------
         # Average PSNR and LPIPS

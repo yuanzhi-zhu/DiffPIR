@@ -1,6 +1,8 @@
-# [Denoising Diffusion Models for Plug-and-Play Image Restoration](https://arxiv.org/abs/2305.08995)
+# Denoising Diffusion Models for Plug-and-Play Image Restoration
 
 [Yuanzhi Zhu](https://yuanzhi-zhu.github.io/about/), [Kai Zhang](https://cszn.github.io/), [Jingyun Liang](https://jingyunliang.github.io/), [Jiezhang Cao](https://www.jiezhangcao.com/), [Bihan Wen](https://personal.ntu.edu.sg/bihan.wen/), [Radu Timofte](http://people.ee.ethz.ch/~timofter/), [Luc Van Gool](https://vision.ee.ethz.ch/people-details.OTAyMzM=.TGlzdC8zMjQ4LC0xOTcxNDY1MTc4.html).
+
+[[project page](https://yuanzhi-zhu.github.io/DiffPIR/)] [[paper](https://arxiv.org/pdf/2305.08995.pdf)]
 
 This repository contains the code and data associated with the paper "Denoising Diffusion Models for Plug-and-Play Image Restoration", which was presented at the CVPR workshop NTIRE 2023.
 

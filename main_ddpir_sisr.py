@@ -417,7 +417,7 @@ def main():
                         logger.info('{:->4d}--> {:>10s} -- sf:{:>1d} --k:{:>2d} PSNR: {:.4f}dB'.format(idx+1, img_name+ext, sf, k_index, psnr))
 
                     if save_E:
-                        util.imsave(img_E, os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_'+model_name+'.png'))
+                        util.imsave(img_E, os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_'+model_name+ext))
 
                     if n_channels == 1:
                         img_H = img_H.squeeze()
@@ -428,7 +428,7 @@ def main():
                         img_total = cv2.hconcat(progress_img)
                         if show_img:
                             util.imshow(img_total,figsize=(80,4))
-                        util.imsave(img_total*255., os.path.join(E_path, img_name+'_sigma_{:.3f}_process_lambda_{:.3f}_{}_psnr_{:.4f}.png'.format(noise_level_img,lambda_,current_time,psnr)))
+                        util.imsave(img_total*255., os.path.join(E_path, img_name+'_sigma_{:.3f}_process_lambda_{:.3f}_{}_psnr_{:.4f}{}'.format(noise_level_img,lambda_,current_time,psnr,ext)))
                         
                     # --------------------------------
                     # (4) img_LEH
@@ -447,10 +447,10 @@ def main():
                         img_I[:k_v.shape[0], -k_v.shape[1]:, ...] = k_v
                         img_I[:img_L.shape[0], :img_L.shape[1], ...] = img_L
                         util.imshow(np.concatenate([img_I, img_E, img_H], axis=1), title='LR / Recovered / Ground-truth') if show_img else None
-                        util.imsave(np.concatenate([img_I, img_E, img_H], axis=1), os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_LEH.png'))
+                        util.imsave(np.concatenate([img_I, img_E, img_H], axis=1), os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_LEH'+ext))
 
                     if save_L:
-                        util.imsave(img_L, os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_LR.png'))
+                        util.imsave(img_L, os.path.join(E_path, img_name+'_x'+str(sf)+'_k'+str(k_index)+'_LR'+ext))
 
                     if n_channels == 3:
                         img_E_y = util.rgb2ycbcr(img_E, only_y=True)
