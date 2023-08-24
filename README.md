@@ -46,6 +46,7 @@ you can also download with:
 ```bash
 bash download.sh
 ```
+Do not forget to rename "ffhq_10m" to "diffusion_ffhq_m" for code consistency.
 
 ### Inference Code
 ```python
