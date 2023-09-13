@@ -12,7 +12,7 @@ from utils import utils_logger
 from utils import utils_image as util
 from utils.utils_inpaint import mask_generator
 
-from guided_diffusion import dist_util
+# from guided_diffusion import dist_util
 from guided_diffusion.script_util import (
     NUM_CLASSES,
     model_and_diffusion_defaults,
@@ -124,9 +124,10 @@ def main():
     args = utils_model.create_argparser(model_config).parse_args([])
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys()))
-    model.load_state_dict(
-        dist_util.load_state_dict(args.model_path, map_location="cpu")
-    )
+    # model.load_state_dict(
+    #     dist_util.load_state_dict(args.model_path, map_location="cpu")
+    # )
+    model.load_state_dict(torch.load(args.model_path, map_location="cpu"))
     model.eval()
     for k, v in model.named_parameters():
         v.requires_grad = False
