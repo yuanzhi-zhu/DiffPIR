@@ -54,7 +54,12 @@ python main_ddpir_sisr.py # SR
 python main_ddpir_deblur.py # deblur
 python main_ddpir_inpainting.py # inpainting
 ```
-currently the parameters have to be configured inside the python scripts.
+Alternatively:
+```python
+python main_ddpir.py --opt configs/sr.yaml # SR
+python main_ddpir.py --opt configs/deblur.yaml # deblur
+python main_ddpir.py --opt configs/inpaint.yaml # inpainting
+```
 
 ## Brief Introduction
 Upon comparison with several earlier iterative image restoration methods, such as [USRNet](https://github.com/cszn/USRNet), we found that the diffusion sampling framework offers a more systematic approach to solve data sub-problems and prior sub-problems in an iterative plug and play manner.
