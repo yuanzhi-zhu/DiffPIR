@@ -1,0 +1,42 @@
+task: sr
+seed: 42
+
+noise_level_img: 12.75
+noise_level_model: noise_level_img
+model_name: diffusion_ffhq_10m
+testset_name: demo_test
+num_train_timesteps: 1000
+iter_num: 100
+iter_num_U: 1
+
+save_L: true
+save_E: false
+save_LEH: false
+save_progressive: true
+
+lambda_: 1
+zeta: 0.1
+sub_1_analytic: true
+log_process: false
+ddim_sample: false
+model_output_type: pred_xstart
+generate_mode: DiffPIR
+skip_type: quad
+eta: 0
+guidance_scale: 1.0 # effective guidance scale
+n_channels: 3
+cwd: ''
+
+calc_LPIPS: true
+beta_start: 0.0001
+beta_end: 0.02
+
+noise_init_img: max
+skip_noise_model_t: false
+
+
+# sr
+sf: 4
+sr_mode: blur
+inIter: 1
+gamma: 0.01
