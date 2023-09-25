@@ -3,6 +3,7 @@ import math
 import random
 import numpy as np
 import torch
+import torch.nn.functional as F
 import cv2
 from torchvision.utils import make_grid
 from datetime import datetime
@@ -164,6 +165,13 @@ def imsave(img, img_path):
         img = img[:, :, [2, 1, 0]]
     cv2.imwrite(img_path, img)
 
+def imsave_batch(imgs, names, save_path, save_name):
+    for i in range(imgs.shape[0]):
+        img = imgs[i]
+        img_name = names[i]
+        # img_name, ext = os.path.splitext(os.path.basename(img_name))
+        imsave(img, os.path.join(save_path, save_name+img_name))
+
 
 '''
 # =======================================
@@ -226,6 +234,13 @@ def tensor2uint(img):
         img = np.transpose(img, (1, 2, 0))
     return np.uint8((img*255.0).round())
 
+# convert torch tensor to uint
+def tensor2uint_batch(img):
+    img = img.data.float().clamp_(0, 1).cpu().numpy()
+    if img.ndim == 4:
+        img = np.transpose(img, (0, 2, 3, 1))
+    return np.uint8((img*255.0).round())
+
 
 # --------------------------------
 # numpy(single) <--->  tensor
@@ -237,6 +252,8 @@ def tensor2uint(img):
 def single2tensor4(img):
     return torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1).float().unsqueeze(0)
 
+def single2tensor4_batch(img):
+    return torch.from_numpy(np.ascontiguousarray(img)).permute(0, 3, 1, 2).float()
 
 def single2tensor5(img):
     return torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1, 3).float().unsqueeze(0)
@@ -450,6 +467,29 @@ def rgb2ycbcr(img, only_y=True):
     return rlt.astype(in_img_type)
 
 
+def rgb2ycbcr_batch(img_tensor, only_y=True):
+    '''Convert an RGB tensor to YCbCr color space.
+    
+    Args:
+        img_tensor (torch.Tensor): Input RGB tensor with shape (batch, channels, height, width).
+        only_y (bool): If True, only return the Y channel.
+    
+    Returns:
+        torch.Tensor: YCbCr tensor with shape (batch, channels, height, width).
+    '''
+    img_tensor = img_tensor.float()
+    
+    rlt = torch.zeros_like(img_tensor)
+    if only_y:
+        rlt[:, 0, :, :] = (0.299 * img_tensor[:, 0, :, :] + 0.587 * img_tensor[:, 1, :, :] + 0.114 * img_tensor[:, 2, :, :])
+    else:
+        rlt[:, 0, :, :] = (0.299 * img_tensor[:, 0, :, :] + 0.587 * img_tensor[:, 1, :, :] + 0.114 * img_tensor[:, 2, :, :])
+        rlt[:, 1, :, :] = (128.0 - 0.169 * img_tensor[:, 0, :, :] - 0.331 * img_tensor[:, 1, :, :] + 0.5 * img_tensor[:, 2, :, :])
+        rlt[:, 2, :, :] = (128.0 + 0.5 * img_tensor[:, 0, :, :] - 0.419 * img_tensor[:, 1, :, :] - 0.081 * img_tensor[:, 2, :, :])
+    
+    return rlt
+
+
 def ycbcr2rgb(img):
     '''same as matlab ycbcr2rgb
     Input:
@@ -557,6 +597,17 @@ def calculate_psnr(img1, img2, border=0):
     if mse == 0:
         return float('inf')
     return 20 * math.log10(255.0 / math.sqrt(mse))
+
+def calculate_psnr_batch(batch1, batch2, max_pixel=2.0, eps=1e-10):
+    if not batch1.shape == batch2.shape:
+        raise ValueError('Input images must have the same dimensions.')
+    mse = torch.mean((batch1 - batch2) ** 2, axis=(1, 2, 3))
+    zeros = torch.zeros_like(mse)
+    inf = torch.ones_like(mse) * float('inf')
+    psnr_values = torch.where(mse == 0, inf, 20 * torch.log10(max_pixel / torch.sqrt(mse + eps)))
+    psnr_values = torch.where(torch.isnan(psnr_values), zeros, psnr_values)
+    mean_psnr = torch.mean(psnr_values)
+    return mean_psnr.item()
 
 
 # ----------

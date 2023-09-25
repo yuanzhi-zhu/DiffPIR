@@ -25,6 +25,8 @@ import argparse
 import shutil
 import random
 
+from torch.utils.data import Dataset, DataLoader
+
 # from guided_diffusion import dist_util
 from guided_diffusion.script_util import (
     NUM_CLASSES,
@@ -32,6 +34,89 @@ from guided_diffusion.script_util import (
     create_model_and_diffusion,
     args_to_dict,
 )
+
+class CustomDataset(Dataset):
+    def __init__(self, img_paths, config):
+        self.img_paths = img_paths
+        self.config = config
+
+    def __len__(self):
+        return len(self.img_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.img_paths[idx]
+
+        # --------------------------------
+        # load kernel
+        # --------------------------------
+
+        if self.config.task == "sr":
+            kernels = hdf5storage.loadmat(os.path.join(self.config.cwd, 'kernels', 'kernels_bicubicx234.mat'))['kernels']
+            k_index = self.config.sf-2 if self.config.sf < 5 else 2
+            k = kernels[0, k_index].astype(np.float64)
+        elif self.config.task == 'deblur':
+            if self.config.use_DIY_kernel:
+                np.random.seed(seed=idx*10)  # for reproducibility of blur kernel for each image
+                if self.config.blur_mode == 'Gaussian':
+                    kernel_std_i = self.config.kernel_std * np.abs(np.random.rand()*2+1)
+                    kernel = GaussialBlurOperator(kernel_size=self.config.kernel_size, intensity=kernel_std_i, device=self.config.device)
+                elif self.config.blur_mode == 'motion':
+                    kernel = MotionBlurOperator(kernel_size=self.config.kernel_size, intensity=self.config.kernel_std, device=self.config.device)
+                k_tensor = kernel.get_kernel().to(self.config.device, dtype=torch.float)
+                k = k_tensor.clone().detach().cpu().numpy()       #[0,1]
+                k = np.squeeze(k)
+                k = np.squeeze(k)
+            else:
+                k_index = 0
+                kernels = hdf5storage.loadmat(os.path.join(self.config.cwd, 'kernels', 'Levin09.mat'))['kernels']
+                k = kernels[0, k_index].astype(np.float32)
+        else:
+            k = torch.ones((1,1,1,1)) # dummy kernel
+        
+        # --------------------------------
+        # get img_L
+        # --------------------------------
+
+        img_name= os.path.basename(img_path)
+        img_H = util.imread_uint(img_path, n_channels=self.config.n_channels)
+        img_H = util.modcrop(img_H, self.config.sf)  # modcrop
+        if self.config.task == "sr":
+            img_H_tensor = np.transpose(img_H, (2, 0, 1))
+            img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(self.config.device)
+            img_H_tensor = img_H_tensor / 255 
+            down_sample = Resizer(img_H_tensor.shape, 1/self.config.sf).to(self.config.device)
+            if self.config.sr_mode == 'blur':
+                img_L = util.imresize_np(util.uint2single(img_H), 1/self.config.sf)
+            elif self.config.sr_mode == 'cubic':
+                # set up resizers
+                up_sample = partial(F.interpolate, scale_factor=self.config.sf)
+                img_L = down_sample(img_H_tensor)
+                img_L = img_L.cpu().numpy()       #[0,1]
+                img_L = np.squeeze(img_L)
+                if img_L.ndim == 3:
+                    img_L = np.transpose(img_L, (1, 2, 0))
+            mask = np.ones_like(img_L)
+        elif self.config.task == 'deblur':
+            # mode='wrap' is important for analytical solution
+            img_L = ndimage.convolve(img_H, np.expand_dims(k, axis=2), mode='wrap')
+            img_L = util.uint2single(img_L)
+            mask = np.ones_like(img_L)
+        elif self.config.task == 'inpaint':
+            if self.config.load_mask:
+                mask = util.imread_uint(self.config.mask_path, n_channels=self.config.n_channels).astype(bool)
+            else:
+                mask_gen = mask_generator(mask_type=self.config.mask_type, mask_len_range=self.config.mask_len_range, mask_prob_range=self.config.mask_prob_range)
+                mask = mask_gen(util.uint2tensor4(img_H)).numpy()
+                mask = np.squeeze(mask)
+                mask = np.transpose(mask, (1, 2, 0))
+            img_L = img_H * mask  / 255.   #(256,256,3)         [0,1]
+
+        img_L = img_L * 2 - 1
+        img_L += np.random.normal(0, self.config.noise_level_img * 2, img_L.shape) # add AWGN
+        img_L = img_L / 2 + 0.5
+
+        # Return images names and kernels
+        return img_H, img_L, img_name, k, mask
 
 class Config:
     def __init__(self, dictionary):
@@ -122,6 +207,14 @@ def main():
     logger = logging.getLogger(logger_name)
 
     # ----------------------------------------
+    # load datasets
+    # ----------------------------------------
+    # Assuming you have L_paths as your list of image file paths
+    dataset = CustomDataset(L_paths, config)
+    # Define batch size and create a DataLoader
+    dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False)
+
+    # ----------------------------------------
     # load model
     # ----------------------------------------
 
@@ -164,85 +257,18 @@ def main():
         test_results['psnr_y'] = []
         if config.calc_LPIPS:
             test_results['lpips'] = []
-        for idx, img in enumerate(L_paths):
-
-            img_name, ext = os.path.splitext(os.path.basename(img))
+        total_num = 0
+        for idx, batch in enumerate(dataloader):
             model_out_type = config.model_output_type
-
-            # --------------------------------
-            # load kernel
-            # --------------------------------
-
-            if config.task == "sr":
-                kernels = hdf5storage.loadmat(os.path.join(config.cwd, 'kernels', 'kernels_bicubicx234.mat'))['kernels']
-                k_index = sf-2 if sf < 5 else 2
-                k = kernels[0, k_index].astype(np.float64)
-            elif config.task == 'deblur':
-                if config.use_DIY_kernel:
-                    np.random.seed(seed=idx*10)  # for reproducibility of blur kernel for each image
-                    if config.blur_mode == 'Gaussian':
-                        kernel_std_i = config.kernel_std * np.abs(np.random.rand()*2+1)
-                        kernel = GaussialBlurOperator(kernel_size=config.kernel_size, intensity=kernel_std_i, device=config.device)
-                    elif config.blur_mode == 'motion':
-                        kernel = MotionBlurOperator(kernel_size=config.kernel_size, intensity=config.kernel_std, device=config.device)
-                    k_tensor = kernel.get_kernel().to(config.device, dtype=torch.float)
-                    k = k_tensor.clone().detach().cpu().numpy()       #[0,1]
-                    k = np.squeeze(k)
-                    k = np.squeeze(k)
-                else:
-                    k_index = 0
-                    kernels = hdf5storage.loadmat(os.path.join(config.cwd, 'kernels', 'Levin09.mat'))['kernels']
-                    k = kernels[0, k_index].astype(np.float32)
-                util.imsave(k*255.*200, os.path.join(config.E_path, f'motion_kernel_{img_name}{ext}'))
-                #np.save(os.path.join(E_path, 'motion_kernel.npy'), k)
-                k_4d = torch.from_numpy(k).to(config.device)
-                k_4d = torch.einsum('ab,cd->abcd',torch.eye(3).to(config.device),k_4d)
+            batch_size = batch[0].shape[0]
+            C, H, W = batch[0].shape[3], batch[0].shape[1], batch[0].shape[2]
+            img_H, img_L, names, k, mask = batch
+            # convert to numpy
+            img_H = img_H.numpy()
+            img_L = img_L.numpy()
+            k = k.numpy()
+            mask = mask.numpy()
             
-            # --------------------------------
-            # (1) get img_L
-            # --------------------------------
-
-            img_H = util.imread_uint(img, n_channels=config.n_channels)
-            img_H = util.modcrop(img_H, config.sf)  # modcrop
-            img_H_tensor = np.transpose(img_H, (2, 0, 1))
-            img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(config.device)
-            img_H_tensor = img_H_tensor / 255
-
-            if config.task == "sr":
-                degrade_op = Resizer(img_H_tensor.shape, 1/config.sf).to(config.device)
-                if config.sr_mode == 'blur':
-                    img_L = util.imresize_np(util.uint2single(img_H), 1/config.sf)
-                elif config.sr_mode == 'cubic':
-                    # set up resizers
-                    up_sample = partial(F.interpolate, scale_factor=config.sf)
-                    img_L = degrade_op(img_H_tensor)
-                    img_L = img_L.cpu().numpy()       #[0,1]
-                    img_L = np.squeeze(img_L)
-                    if img_L.ndim == 3:
-                        img_L = np.transpose(img_L, (1, 2, 0))
-            elif config.task == 'deblur':
-                def degrade_op(x):
-                    x = x / 2 + 0.5
-                    pad_2d = torch.nn.ReflectionPad2d(k.shape[0]//2)
-                    x_blur = F.conv2d(pad_2d(x), k_4d)
-                    return x_blur
-                # mode='wrap' is important for analytical solution
-                img_L = ndimage.convolve(img_H, np.expand_dims(k, axis=2), mode='wrap')
-                img_L = util.uint2single(img_L)
-            elif config.task == 'inpaint':
-                if config.load_mask:
-                    mask = util.imread_uint(config.mask_path, n_channels=config.n_channels).astype(bool)
-                else:
-                    mask_gen = mask_generator(mask_type=config.mask_type, mask_len_range=config.mask_len_range, mask_prob_range=config.mask_prob_range)
-                    mask = mask_gen(util.uint2tensor4(img_H)).numpy()
-                    mask = np.squeeze(mask)
-                    mask = np.transpose(mask, (1, 2, 0))
-                img_L = img_H * mask  / 255.   #(256,256,3)         [0,1]
-
-            img_L = img_L * 2 - 1
-            img_L += np.random.normal(0, config.noise_level_img * 2, img_L.shape) # add AWGN
-            img_L = img_L / 2 + 0.5
-
             # --------------------------------
             # (2) get rhos and sigmas
             # -------------------------------- 
@@ -264,25 +290,35 @@ def main():
             # --------------------------------
             # (3) initialize x, and pre-calculation
             # --------------------------------
-
-            y = util.single2tensor4(img_L).to(config.device)   #(1,3,256,256) [0,1]
+            y = util.single2tensor4_batch(img_L).to(config.device)   #(1,3,256,256) [0,1]
 
             if config.task == "sr":
-                x = cv2.resize(img_L, (img_L.shape[1]*config.sf, img_L.shape[0]*config.sf), interpolation=cv2.INTER_CUBIC)
-                if np.ndim(x)==2:
-                    x = x[..., None]
-                x = util.single2tensor4(x).to(config.device)
+                degrade_op = Resizer((batch_size, C, H, W), 1/config.sf).to(config.device)
+                x = F.interpolate(torch.from_numpy(img_L).permute(0, 3, 1, 2), size=(img_L.shape[1]*config.sf, img_L.shape[2]*config.sf), mode='bicubic', align_corners=False).to(config.device)
+                if config.sr_mode == 'cubic':
+                    up_sample = partial(F.interpolate, scale_factor=config.sf)
             elif config.task == "deblur":
+                util.imsave_batch(k*255.*200, names, config.E_path, 'motion_kernel_')
+                #np.save(os.path.join(E_path, 'motion_kernel.npy'), k)
+                k_5d = torch.from_numpy(k).to(config.device)
+                k_5d = torch.einsum('ab,ecd->eabcd',torch.eye(3).to(config.device),k_5d)
                 x = y
+                def degrade_op(x):
+                    x = x / 2 + 0.5
+                    pad_2d = torch.nn.ReflectionPad2d(k.shape[0]//2)
+                    x_blurs = []
+                    for i in range(x.shape[0]):
+                        x_blurs.append(F.conv2d(pad_2d(x[x_i:x_i+1]), k_5d[i]))
+                    return x_blur
             elif config.task == 'inpaint':
                 img_L = img_L * mask
-                mask = util.single2tensor4(mask.astype(np.float32)).to(device)
+                mask = util.single2tensor4_batch(mask.astype(np.float32)).to(device)
                 x = y * mask
             x = sqrt_alphas_cumprod[config.t_start] * (2*x-1) + sqrt_1m_alphas_cumprod[config.t_start] * torch.randn_like(x)
             # x = torch.randn_like(x)
 
             if config.task in ['sr', 'deblur']:
-                k_tensor = util.single2tensor4(np.expand_dims(k, 2)).to(config.device) 
+                k_tensor = util.single2tensor4_batch(np.expand_dims(k, 3)).to(config.device) 
                 FB, FBC, F2B, FBFy = sr.pre_calculate(y, k_tensor, config.sf)
 
             # --------------------------------
@@ -435,15 +471,9 @@ def main():
 
                 # save the process
                 x_0 = (x/2+0.5)
-                if config.save_progressive and (seq[i] in progress_seq):
-                    x_show = x_0.clone().detach().cpu().numpy()       #[0,1]
-                    x_show = np.squeeze(x_show)
-                    if x_show.ndim == 3:
-                        x_show = np.transpose(x_show, (1, 2, 0))
-                    progress_img.append(x_show)
-                    if config.log_process:
-                        logger.info(f'{seq[i]:>4d}, steps: {t_i:>4d}, np.max(x_show): {np.max(x_show):.4f}, np.min(x_show): {np.min(x_show):.4f}')
-                    
+
+            total_num += batch_size
+
             # recover conditional part
             if config.task == "inpaint" and config.generate_mode in ['repaint','DiffPIR']:
                 x[mask.to(torch.bool)] = (2*y-1)[mask.to(torch.bool)]
@@ -452,95 +482,59 @@ def main():
             # (3) img_E
             # --------------------------------
 
-            img_E = util.tensor2uint(x_0)
-
-            psnr = util.calculate_psnr(img_E, img_H, border=border)
-            test_results['psnr'].append(psnr)
+            img_E = util.tensor2uint_batch(x_0)
+            img_H_tensor = np.transpose(img_H, (0, 3, 1, 2))
+            img_H_tensor = torch.from_numpy(img_H_tensor).to(device)
+            img_H_tensor = img_H_tensor / 255 * 2 -1
+            psnr = util.calculate_psnr_batch(x_0.detach()*2-1, img_H_tensor)
+            test_results['psnr'].append(psnr * batch_size)
             
             if config.calc_LPIPS:
-                img_H_tensor = np.transpose(img_H, (2, 0, 1))
-                img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(device)
-                img_H_tensor = img_H_tensor / 255 * 2 -1
                 lpips_score = loss_fn_vgg(x_0.detach()*2-1, img_H_tensor)
                 lpips_score = lpips_score.cpu().detach().numpy()[0][0][0][0]
-                test_results['lpips'].append(lpips_score)
-                logger.info(f"{idx+1:->4d}--> {img_name+ext:>10s} PSNR: {psnr:.4f}dB; LPIPS: {lpips_score:.4f}; ave LPIPS: {sum(test_results['lpips']) / len(test_results['lpips']):.4f}")
+                test_results['lpips'].append(lpips_score * batch_size)
+                logger.info(f"batch{idx+1:->4d}--> PSNR: {psnr:.4f}dB; LPIPS: {lpips_score:.4f}; ave LPIPS: {sum(test_results['lpips']) / total_num:.4f}")
             else:
-                logger.info(f'{idx+1:->4d}--> {img_name+ext:>10s} PSNR: {psnr:.4f}dB')
+                logger.info(f'batch{idx+1:->4d}--> PSNR: {psnr:.4f}dB')
 
             if config.save_E:
-                util.imsave(img_E, os.path.join(config.E_path, f"{img_name}_x{sf}_{config.model_name+ext}"))
+                # util.imsave(img_E, os.path.join(config.E_path, f"{img_name}_x{sf}_{config.model_name+ext}"))
+                util.imsave_batch(img_E, names, config.E_path, f"{config.model_name}_x{config.sf}_lambda{config.lambda_:.4f}_zeta{config.zeta:.4f}_")
 
             if config.n_channels == 1:
                 img_H = img_H.squeeze()
 
-            if config.save_progressive:
-                now = datetime.now()
-                current_time = now.strftime("%Y_%m_%d_%H_%M_%S")
-                if config.task == "inpaint":
-                    if config.generate_mode in ['repaint','DiffPIR']:
-                        mask = np.squeeze(mask.cpu().numpy())
-                        if mask.ndim == 3:
-                            mask = np.transpose(mask, (1, 2, 0))
-                    img_total = cv2.hconcat(progress_img)
-                    util.imsave(img_total*255., os.path.join(config.E_path, f"{img_name}_sigma_{config.noise_level_img:.3f}_process_lambda_{config.lambda_:.3f}_{current_time}{ext}"))
-                    images = []
-                    y_t = np.squeeze((2*y-1).cpu().numpy())      #[-1,1]
-                    if y_t.ndim == 3:
-                        y_t = np.transpose(y_t, (1, 2, 0))
-                    if config.generate_mode in ['repaint','DiffPIR']:
-                        for x in progress_img:
-                            images.append((y_t)* mask+ (1-mask) * x)
-                        img_total = cv2.hconcat(images)
-                        if config.save_progressive_mask:
-                            util.imsave(img_total*255., os.path.join(config.E_path, f"{img_name}_sigma_{config.noise_level_img:.3f}_process_lambda_{config.lambda_:.3f}_{current_time}{ext}"))
-                else:
-                    img_total = cv2.hconcat(progress_img)
-                    util.imsave(img_total*255., os.path.join(config.E_path, f"{img_name}_sigma_{config.noise_level_img:.3f}_process_lambda_{config.lambda_:.3f}_{current_time}_psnr_{psnr:.4f}{ext}"))
-                
             # --------------------------------
-            # (4) img_LEH
+            # (4) img_L
             # --------------------------------
 
             img_L = util.single2uint(img_L).squeeze()
 
-            if config.save_LEH:
-                k_v = k/np.max(k)*1.0
-                if config.n_channels==1:
-                    k_v = util.single2uint(k_v)
-                else:
-                    k_v = util.single2uint(np.tile(k_v[..., np.newaxis], [1, 1, config.n_channels]))
-                k_v = cv2.resize(k_v, (3*k_v.shape[1], 3*k_v.shape[0]), interpolation=cv2.INTER_NEAREST)
-                img_I = cv2.resize(img_L, (config.sf*img_L.shape[1], config.sf*img_L.shape[0]), interpolation=cv2.INTER_NEAREST)
-                img_I[:k_v.shape[0], -k_v.shape[1]:, ...] = k_v
-                img_I[:img_L.shape[0], :img_L.shape[1], ...] = img_L
-                util.imsave(np.concatenate([img_I, img_E, img_H], axis=1), os.path.join(config.E_path, f"{img_name}_x{config.sf}_LEH{ext}"))
-
             if config.save_L:
-                util.imsave(img_L, os.path.join(config.E_path, f"{img_name}_x{config.sf}_LR{ext}"))
+                util.imsave_batch(img_L, names, config.E_path, f"LR_x{config.sf}_")
 
             if config.n_channels == 3:
-                img_E_y = util.rgb2ycbcr(img_E, only_y=True)
-                img_H_y = util.rgb2ycbcr(img_H, only_y=True)
-                psnr_y = util.calculate_psnr(img_E_y, img_H_y, border=border)
-                test_results['psnr_y'].append(psnr_y)
+                img_E_y = util.rgb2ycbcr_batch(x_0.detach()*2-1, only_y=True)
+                img_H_y = util.rgb2ycbcr_batch(img_H_tensor, only_y=True)
+                psnr_y = util.calculate_psnr_batch(img_E_y, img_H_y)
+                test_results['psnr_y'].append(psnr_y * batch_size)
             
         # --------------------------------
         # Average PSNR and LPIPS for all images
         # --------------------------------
 
-        ave_psnr = sum(test_results['psnr']) / len(test_results['psnr'])
-        logger.info(f'------> Average PSNR(RGB) of ({config.testset_name}) scale factor: ({config.sf}), sigma: ({config.noise_level_model:.3f}): {ave_psnr:.4f} dB')
+        ave_psnr = sum(test_results['psnr']) / total_num
+        logger.info(f'-----------> Average PSNR(RGB) of ({config.testset_name}) scale factor: ({config.sf}), sigma: ({config.noise_level_model:.3f}): {ave_psnr:.4f} dB')
         test_results_ave['psnr_sf'].append(ave_psnr)
 
         if config.n_channels == 3:  # RGB image
-            ave_psnr_y = sum(test_results['psnr_y']) / len(test_results['psnr_y'])
-            logger.info(f'------> Average PSNR(Y) of ({config.testset_name}) scale factor: ({config.sf}), sigma: ({config.noise_level_model:.3f}): {ave_psnr_y:.4f} dB')
+            ave_psnr_y = sum(test_results['psnr_y']) / total_num
+            logger.info(f'-----------> Average PSNR(Y) of ({config.testset_name}) scale factor: ({config.sf}), sigma: ({config.noise_level_model:.3f}): {ave_psnr_y:.4f} dB')
             test_results_ave['psnr_y_sf'].append(ave_psnr_y)
 
         if config.calc_LPIPS:
-            ave_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
-            logger.info(f'------> Average LPIPS of ({config.testset_name}) scale factor: ({config.sf}), sigma: ({config.noise_level_model:.3f}): {ave_lpips:.4f}')
+            ave_lpips = sum(test_results['lpips']) / total_num
+            logger.info(f'-----------> Average LPIPS of ({config.testset_name}) scale factor: ({config.sf}), sigma: ({config.noise_level_model:.3f}): {ave_lpips:.4f}')
             test_results_ave['lpips'].append(ave_lpips)    
         return test_results_ave
 
@@ -596,13 +590,13 @@ def main():
     # ---------------------------------------
 
     ave_psnr_sf = sum(test_results_ave['psnr_sf']) / len(test_results_ave['psnr_sf'])
-    logger.info(f'------> Average PSNR of ({config.testset_name}) {ave_psnr_sf:.4f} dB')
+    logger.info(f'-----------> Average PSNR of ({config.testset_name}) {ave_psnr_sf:.4f} dB')
     if config.n_channels == 3:
         ave_psnr_y_sf = sum(test_results_ave['psnr_y_sf']) / len(test_results_ave['psnr_y_sf'])
-        logger.info(f'------> Average PSNR-Y of ({config.testset_name}) {ave_psnr_y_sf:.4f} dB')
+        logger.info(f'-----------> Average PSNR-Y of ({config.testset_name}) {ave_psnr_y_sf:.4f} dB')
     if config.calc_LPIPS:
         ave_lpips_sf = sum(test_results_ave['lpips']) / len(test_results_ave['lpips'])
-        logger.info(f'------> Average LPIPS of ({config.testset_name}) {ave_lpips_sf:.4f}')
+        logger.info(f'-----------> Average LPIPS of ({config.testset_name}) {ave_lpips_sf:.4f}')
 
 if __name__ == '__main__':
 

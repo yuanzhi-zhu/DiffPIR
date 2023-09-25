@@ -8,11 +8,10 @@ testset_name: demo_test
 num_train_timesteps: 1000
 iter_num: 100
 iter_num_U: 1
+batch_size: 16
 
 save_L: true
-save_E: false
-save_LEH: false
-save_progressive: true
+save_E: true
 
 lambda_: 1
 zeta: 0.1
