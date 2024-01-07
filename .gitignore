@@ -12,3 +12,6 @@ slurm_log/
 results/
 motionblur/
 DiffPIR_env/
+testsets__/
+main_ddpir_sisr_test.py
+main_ddpir_sisr_x0.py
