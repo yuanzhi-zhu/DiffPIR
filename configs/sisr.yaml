@@ -14,7 +14,7 @@ save_L: true
 save_E: true
 
 lambda_: 1
-zeta: 0.1
+zeta: 0.25
 sub_1_analytic: true
 log_process: false
 ddim_sample: false

@@ -88,8 +88,6 @@ class CustomDataset(Dataset):
             if self.config.sr_mode == 'blur':
                 img_L = util.imresize_np(util.uint2single(img_H), 1/self.config.sf)
             elif self.config.sr_mode == 'cubic':
-                # set up resizers
-                up_sample = partial(F.interpolate, scale_factor=self.config.sf)
                 img_L = down_sample(img_H_tensor)
                 img_L = img_L.cpu().numpy()       #[0,1]
                 img_L = np.squeeze(img_L)
@@ -249,8 +247,8 @@ def main():
     # ----------------------------------------
 
     def test_rho(config): 
-        parameters = f'eta{config.eta}, zeta{config.zeta}, lambda{config.lambda_}, guidance_scale{config.guidance_scale}'
-        parameters = parameters + f', inIter{config.inIter}, gamma{config.gamma}' if (config.task == "sr" and config.sr_mode == 'cubic') else parameters
+        parameters = f'eta:{config.eta}, zeta:{config.zeta}, lambda:{config.lambda_}, guidance_scale:{config.guidance_scale}'
+        parameters = parameters + f', inIter:{config.inIter}, gamma:{config.gamma}' if (config.task == "sr" and config.sr_mode == 'cubic') else parameters
         logger.info(parameters)
         test_results = OrderedDict()
         test_results['psnr'] = []
@@ -300,16 +298,16 @@ def main():
             elif config.task == "deblur":
                 util.imsave_batch(k*255.*200, names, config.E_path, 'motion_kernel_')
                 #np.save(os.path.join(E_path, 'motion_kernel.npy'), k)
-                k_5d = torch.from_numpy(k).to(config.device)
-                k_5d = torch.einsum('ab,ecd->eabcd',torch.eye(3).to(config.device),k_5d)
+                k_4d = torch.from_numpy(k).to(device)
+                k_4d = torch.einsum('ab,cd->abcd',torch.eye(3).to(device),k_4d)
                 x = y
                 def degrade_op(x):
                     x = x / 2 + 0.5
                     pad_2d = torch.nn.ReflectionPad2d(k.shape[0]//2)
                     x_blurs = []
                     for i in range(x.shape[0]):
-                        x_blurs.append(F.conv2d(pad_2d(x[x_i:x_i+1]), k_5d[i]))
-                    return x_blur
+                        x_blurs.append(F.conv2d(pad_2d(x[i:i+1]), k_4d))
+                    return torch.cat(x_blurs, 0)
             elif config.task == 'inpaint':
                 img_L = img_L * mask
                 mask = util.single2tensor4_batch(mask.astype(np.float32)).to(device)
@@ -325,7 +323,6 @@ def main():
             # (4) main iterations
             # --------------------------------
 
-            progress_img = []
             # create sequence of timestep for sampling
             skip = config.num_train_timesteps // config.iter_num
             if config.skip_type == 'uniform':
@@ -558,8 +555,7 @@ def main():
             # experiments
             lambdas = [config.lambda_*i for i in range(2,13)]
             for lambda_ in lambdas:
-                #for zeta_i in [config.zeta*i for i in range(2,4)]:
-                for zeta_i in [0.25]:
+                for zeta_i in [config.zeta]:
                     config.lambda_ = lambda_
                     config.zeta = zeta_i
                     test_results_ave = test_rho(config)
