@@ -56,7 +56,7 @@ python main_ddpir_inpainting.py # inpainting
 ```
 Alternatively:
 ```python
-python main_ddpir.py --opt configs/sr.yaml # SR
+python main_ddpir.py --opt configs/sisr.yaml # SR
 python main_ddpir.py --opt configs/deblur.yaml # deblur
 python main_ddpir.py --opt configs/inpaint.yaml # inpainting
 ```
