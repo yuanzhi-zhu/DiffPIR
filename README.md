@@ -61,6 +61,9 @@ python main_ddpir.py --opt configs/deblur.yaml # deblur
 python main_ddpir.py --opt configs/inpaint.yaml # inpainting
 ```
 
+### Train Your Own Diffusion Models
+To train a new diffusion model, please follow [OpenAI Guided Diffusion](https://github.com/openai/guided-diffusion).
+
 ## Brief Introduction
 Upon comparison with several earlier iterative image restoration methods, such as [USRNet](https://github.com/cszn/USRNet), we found that the diffusion sampling framework offers a more systematic approach to solve data sub-problems and prior sub-problems in an iterative plug and play manner.
 
